@@ -1,0 +1,27 @@
+CompileFlags:
+  CompilationDatabase: ./build
+  Add:
+    - -I.
+    - -I./build/_deps/stb-src
+    - -I./build/_deps/fastnoiselite-src/C
+    - -I./libvoxel/include
+
+    # Standard flags
+    - -std=c11
+    - -Wall
+    - -Wextra
+
+  # Remove problematic flags
+  Remove:
+    - -march=*
+    - -mtune=*
+
+Diagnostics:
+  UnusedIncludes: None
+  MissingIncludes: Strict
+
+Index:
+  Background: Build
+
+Format:
+  Style: file

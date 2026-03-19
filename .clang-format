@@ -1,0 +1,11 @@
+BasedOnStyle: LLVM
+
+# Practical defaults for this C codebase.
+ColumnLimit: 100
+UseTab: Never
+DerivePointerAlignment: false
+PointerAlignment: Right
+
+# Avoid intrusive include re-ordering in a mixed C/macro-heavy project.
+IncludeBlocks: Preserve
+SortIncludes: Never
