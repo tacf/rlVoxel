@@ -6,6 +6,7 @@
 
 #include <raylib.h>
 
+#include "gfx/clouds.h"
 #include "gfx/renderer.h"
 #include "game/game_input.h"
 #include "game/player.h"
@@ -16,6 +17,7 @@ typedef struct Game {
   Player player;
   Camera3D camera;
   Renderer renderer;
+  Clouds clouds;
 
   Texture2D terrain_texture;
   Font font;

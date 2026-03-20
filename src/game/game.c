@@ -6,6 +6,8 @@
 #include <raymath.h>
 
 #include "constants.h"
+#include "gfx/clouds.h"
+#include "gfx/renderer.h"
 #include "gfx/selection_highlight.h"
 #include "game/game_input.h"
 #include "game/player.h"
@@ -155,6 +157,7 @@ static void game_draw_world_pass(void *ctx, const Camera3D *camera) {
     return;
   }
 
+  Clouds_Draw(&pass->game->clouds, camera, pass->ambient);
   World_Draw(&pass->game->world, camera, pass->ambient);
   game_draw_target_block_highlight(pass->game, camera);
 }
@@ -278,6 +281,19 @@ bool Game_Init(Game *game, int64_t seed, int render_distance) {
   sync_camera(game);
   set_cursor_locked(game, true);
   game->pending_lock_request = true;
+  game->clouds = (Clouds){
+      .scroll_x = 0.0f,
+      .speed_x = -0.9f, /* Westward drift */
+      .cell_size = 8.0f,
+      .layer_y = 108.5f,
+      .radius_cells = 26,
+      .noise_size = 256,
+      .block_px = 8,
+      .grid_size = 0,
+      .cloud_opacity = 0.7f,
+      .cell_map = NULL,
+  };
+  Clouds_Init(&game->clouds);
   return true;
 
 fail:
@@ -294,6 +310,8 @@ void Game_Shutdown(Game *game) {
     World_Shutdown(&game->world);
     game->world_initialized = false;
   }
+
+  Clouds_Shutdown(&game->clouds);
 
   if (game->font.texture.id != 0) {
     UnloadFont(game->font);
@@ -401,6 +419,8 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
   Profiler_BeginSection("World");
   World_Update(&game->world, game->player.position, tick_dt);
   Profiler_EndSection();
+
+  Clouds_Update(&game->clouds, tick_dt);
 
   Profiler_EndSection();
 }

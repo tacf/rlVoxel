@@ -36,6 +36,7 @@ add_subdirectory(raylib-cimgui)
 
 set(SOURCES
     src/app.c
+    src/gfx/clouds.c
     src/gfx/renderer.c
     src/gfx/selection_highlight.c
     src/game/game.c
