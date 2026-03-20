@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stddef.h>
 
+#include "game/raycast.h"
 #include "raylib.h"
 
 typedef struct SelectionFaceAxes {

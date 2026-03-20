@@ -1,12 +1,15 @@
 #include "world/worldgen.h"
 
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "constants.h"
 #include "math/noise.h"
+#include "math/random.h"
 #include "world/blocks.h"
+#include "world/chunk.h"
 
 typedef enum BiomeType {
   BIOME_RAINFOREST = 0,

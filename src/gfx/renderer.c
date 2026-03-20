@@ -1,6 +1,7 @@
 #include "gfx/renderer.h"
 
 #include "profiling/profiler.h"
+#include "raylib.h"
 #include <stddef.h>
 
 static bool renderer_create_target(Renderer *renderer, int width, int height) {

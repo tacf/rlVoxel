@@ -106,16 +106,6 @@ const Chunk *World_GetChunkConst(const World *world, int cx, int cz) {
   return voxel_chunkmap_get(world->chunks, key);
 }
 
-static void remove_chunk_at(World *world, int cx, int cz) {
-  int64_t key = make_chunk_key(cx, cz);
-  Chunk *chunk = voxel_chunkmap_get(world->chunks, key);
-  if (chunk) {
-    Chunk_Shutdown(chunk);
-    voxel_chunkmap_remove(&world->chunks, key);
-    free(chunk);
-  }
-}
-
 Chunk *World_GetOrCreateChunk(World *world, int cx, int cz) {
   Chunk *existing = World_GetChunk(world, cx, cz);
   if (existing != NULL) {
