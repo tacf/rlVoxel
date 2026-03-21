@@ -29,6 +29,26 @@
 #define WORLD_LOG(...) ((void)0)
 #endif
 
+/*
+ * Lighting scheduler tuning.
+ *
+ * Units:
+ * - *_NODES_PER_TICK_*: max light nodes processed by Lighting_Process per tick.
+ * - *_THRESHOLD: pending nodes currently in LightUpdateQueue.
+ *
+ * Behavior:
+ * - When queue backlog is high, we process more light nodes and load fewer chunks.
+ * - On direct block edits, we do a small immediate settle pass to reduce visible
+ *   one-tick lighting artifacts around the edited block.
+ */
+#define WORLD_LIGHT_NODES_PER_TICK_BASE 50000
+#define WORLD_LIGHT_NODES_PER_TICK_BACKLOG 90000
+#define WORLD_LIGHT_NODES_PER_TICK_OVERLOAD 130000
+#define WORLD_LIGHT_QUEUE_BACKLOG_THRESHOLD 550000
+#define WORLD_LIGHT_QUEUE_OVERLOAD_THRESHOLD 700000
+#define WORLD_LIGHT_QUEUE_CAPACITY_HEADROOM 65536
+#define WORLD_LIGHT_NODES_ON_BLOCK_EDIT 4096
+
 typedef struct ChunkSortEntry ChunkSortEntry;
 static ChunkSortEntry *g_solid_draw_entries = NULL;
 static ChunkSortEntry *g_translucent_draw_entries = NULL;
@@ -93,6 +113,14 @@ static void world_compact_dirty_chunk_queue(World *world) {
   if (world->dirty_chunk_read_index > 1024 && world->dirty_chunk_read_index * 2 >= len) {
     arrdeln(world->dirty_chunk_keys, 0, world->dirty_chunk_read_index);
     world->dirty_chunk_read_index = 0;
+  }
+}
+
+static void world_relight_columns_around(World *world, int x, int z, int radius) {
+  for (int dz = -radius; dz <= radius; dz++) {
+    for (int dx = -radius; dx <= radius; dx++) {
+      Lighting_RelightColumn(world, x + dx, z + dz);
+    }
   }
 }
 
@@ -177,17 +205,18 @@ bool World_SetBlock(World *world, int x, int y, int z, uint8_t block_id) {
   /* Direct block edits should always queue a remesh right away. */
   World_MarkChunkDirty(world, cx, cz);
 
-  Lighting_RelightColumn(world, x, z);
-  Lighting_RelightColumn(world, x + 1, z);
-  Lighting_RelightColumn(world, x - 1, z);
-  Lighting_RelightColumn(world, x, z + 1);
-  Lighting_RelightColumn(world, x, z - 1);
+  /*
+   * Relight a 3x3 neighborhood around the edit to quickly repair stale side
+   * lighting and avoid dark side-faces after local block edits.
+   */
+  world_relight_columns_around(world, x, z, 1);
 
   if (lx == 0 || lx == 15 || lz == 0 || lz == 15) {
     World_MarkNeighborsDirty(world, cx, cz);
   }
 
   Lighting_QueueAround(world, x, y, z);
+  Lighting_Process(world, WORLD_LIGHT_NODES_ON_BLOCK_EDIT);
   return true;
 }
 
@@ -407,6 +436,34 @@ static bool generate_next_chunk(World *world, int center_cx, int center_cz) {
   return false;
 }
 
+static int world_chunk_generation_budget(const World *world) {
+  const LightUpdateQueue *queue = world_queue_const(world);
+  if (queue == NULL) {
+    return 2;
+  }
+  if (queue->count >= WORLD_LIGHT_QUEUE_OVERLOAD_THRESHOLD) {
+    return 0;
+  }
+  if (queue->count >= WORLD_LIGHT_QUEUE_BACKLOG_THRESHOLD) {
+    return 1;
+  }
+  return 2;
+}
+
+static int world_lighting_budget(const World *world) {
+  const LightUpdateQueue *queue = world_queue_const(world);
+  if (queue == NULL) {
+    return WORLD_LIGHT_NODES_PER_TICK_BASE;
+  }
+  if (queue->count >= WORLD_LIGHT_QUEUE_OVERLOAD_THRESHOLD) {
+    return WORLD_LIGHT_NODES_PER_TICK_OVERLOAD;
+  }
+  if (queue->count >= WORLD_LIGHT_QUEUE_BACKLOG_THRESHOLD) {
+    return WORLD_LIGHT_NODES_PER_TICK_BACKLOG;
+  }
+  return WORLD_LIGHT_NODES_PER_TICK_BASE;
+}
+
 static void unload_far_chunks(World *world, int center_cx, int center_cz) {
   int count = voxel_chunkmap_count(world->chunks);
   if (count == 0)
@@ -470,7 +527,7 @@ void World_Init(World *world, int64_t seed, int render_distance, Texture2D terra
 
   LightUpdateQueue *queue = (LightUpdateQueue *)malloc(sizeof(LightUpdateQueue));
   if (queue != NULL) {
-    LightQueue_Init(queue, 750000);
+    LightQueue_Init(queue, WORLD_LIGHT_QUEUE_OVERLOAD_THRESHOLD + WORLD_LIGHT_QUEUE_CAPACITY_HEADROOM);
     world->light_queue_ptr = queue;
   }
 
@@ -487,7 +544,7 @@ void World_Init(World *world, int64_t seed, int render_distance, Texture2D terra
   }
 
   for (int i = 0; i < 12; i++) {
-    Lighting_Process(world, 50000);
+    Lighting_Process(world, world_lighting_budget(world));
     const LightUpdateQueue *q = world_queue_const(world);
     if (q == NULL || q->count == 0) {
       break;
@@ -539,7 +596,8 @@ void World_Update(World *world, Vector3 player_pos, float dt) {
   Profiler_BeginSection("ChunkLoading");
   unload_far_chunks(world, player_cx, player_cz);
 
-  for (int i = 0; i < 2; i++) {
+  int chunk_generation_budget = world_chunk_generation_budget(world);
+  for (int i = 0; i < chunk_generation_budget; i++) {
     if (!generate_next_chunk(world, player_cx, player_cz)) {
       break;
     }
@@ -547,7 +605,7 @@ void World_Update(World *world, Vector3 player_pos, float dt) {
   Profiler_EndSection();
 
   Profiler_BeginSection("Lighting");
-  Lighting_Process(world, 50000);
+  Lighting_Process(world, world_lighting_budget(world));
   Profiler_EndSection();
 
   Profiler_BeginSection("ChunkMeshing");

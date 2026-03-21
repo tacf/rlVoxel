@@ -69,9 +69,23 @@ bool LightQueue_Push(LightUpdateQueue *queue, LightNode node) {
     return false;
   }
 
+  light_queue_compact(queue);
+
   ptrdiff_t pending = arrlen(queue->items) - queue->read_index;
   if (queue->max_pending > 0 && pending >= queue->max_pending) {
-    return false;
+    /*
+     * Keep accepting the newest light work by dropping the oldest pending node
+     * when at capacity. This avoids a hard stall where all subsequent updates
+     * are silently discarded forever.
+     */
+    if (pending > 0) {
+      queue->read_index++;
+      light_queue_compact(queue);
+      pending = arrlen(queue->items) - queue->read_index;
+    }
+    if (queue->max_pending > 0 && pending >= queue->max_pending) {
+      return false;
+    }
   }
 
   arrput(queue->items, node);

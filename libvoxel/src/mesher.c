@@ -205,6 +205,34 @@ static inline float clamp_luminance(float luminance) {
   return (luminance < 0.0f) ? 0.0f : ((luminance > 1.0f) ? 1.0f : luminance);
 }
 
+static float compute_cutout_luminance(const VoxelMesherCallbacks *cb, int wx, int y, int wz,
+                                      const VoxelMesherConfig *config) {
+  /*
+   * Cross-plant blocks (like tall grass) should not be lit only from +Y.
+   * Sample local and horizontal neighbors so a single overhead block does not
+   * force the entire plant to black when side skylight is available.
+   */
+  static const int SAMPLE_OFFSETS[5][3] = {
+      {0, 0, 0},
+      {1, 0, 0},
+      {-1, 0, 0},
+      {0, 0, 1},
+      {0, 0, -1},
+  };
+
+  int max_light = 0;
+  for (int i = 0; i < 5; i++) {
+    int light = cb->get_world_skylight(cb->world_data, wx + SAMPLE_OFFSETS[i][0], y,
+                                       wz + SAMPLE_OFFSETS[i][2]);
+    light = clamp_light(light);
+    if (light > max_light) {
+      max_light = light;
+    }
+  }
+
+  return clamp_luminance(config->light_lut[max_light]);
+}
+
 static float compute_face_luminance(const VoxelMesherCallbacks *cb, int wx, int y, int wz, int face,
                                     const VoxelMesherConfig *config) {
   /* Sample skylight from the neighbor block in the face direction */
@@ -233,6 +261,19 @@ static void face_color(const VoxelBlockRegistry *registry, const VoxelMesherCall
   /* Multiply tint by luminance */
 
   /* Multiply tint by luminance */
+  *r_out = (uint8_t)fminf(255.0f, luminance * (float)tr);
+  *g_out = (uint8_t)fminf(255.0f, luminance * (float)tg);
+  *b_out = (uint8_t)fminf(255.0f, luminance * (float)tb);
+}
+
+static void cutout_color(const VoxelBlockRegistry *registry, const VoxelMesherCallbacks *cb,
+                         const VoxelMesherConfig *config, uint8_t block_id, int wx, int y, int wz,
+                         uint8_t *r_out, uint8_t *g_out, uint8_t *b_out) {
+  float luminance = compute_cutout_luminance(cb, wx, y, wz, config);
+
+  uint8_t tr = 255, tg = 255, tb = 255;
+  VoxelBlock_GetTint(registry, block_id, VOXEL_FACE_UP, &tr, &tg, &tb);
+
   *r_out = (uint8_t)fminf(255.0f, luminance * (float)tr);
   *g_out = (uint8_t)fminf(255.0f, luminance * (float)tg);
   *b_out = (uint8_t)fminf(255.0f, luminance * (float)tb);
@@ -423,7 +464,7 @@ void VoxelMesher_BuildChunk(const VoxelChunk *chunk, const VoxelBlockRegistry *r
           /* Render as cross-plant for tall grass (opacity 0) */
           if (VoxelBlock_Opacity(registry, block_id) == 0) {
             uint8_t r, g, b;
-            face_color(registry, cb, config, block_id, wx, y, wz, VOXEL_FACE_UP, &r, &g, &b);
+            cutout_color(registry, cb, config, block_id, wx, y, wz, &r, &g, &b);
             int tile = VoxelBlock_Texture(registry, block_id, VOXEL_FACE_UP);
             append_cross_plant(cutout, config, tile, (float)lx, (float)y, (float)lz, r, g, b, 255);
             continue;

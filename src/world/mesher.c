@@ -18,6 +18,13 @@ static bool cutout_shader_loaded = false;
 static Shader opaque_ao_shader = {0};
 static bool opaque_ao_shader_loaded = false;
 
+static int floor_div16(int x) {
+  if (x >= 0) {
+    return x >> 4;
+  }
+  return -(((-x) + 15) >> 4);
+}
+
 static Shader get_cutout_shader(void) {
   if (!cutout_shader_loaded) {
     char vs_path[256];
@@ -61,7 +68,22 @@ static uint8_t cb_get_world_block(void *world_data, int wx, int y, int wz) {
 }
 
 static int cb_get_world_skylight(void *world_data, int wx, int y, int wz) {
-  return World_GetSkyLight((World *)world_data, wx, y, wz);
+  World *world = (World *)world_data;
+
+  int cx = floor_div16(wx);
+  int cz = floor_div16(wz);
+  if (World_GetChunkConst(world, cx, cz) == NULL) {
+    if (y < 0) {
+      return 0;
+    }
+    if (y >= WORLD_MAX_HEIGHT) {
+      return 15;
+    }
+    /* Avoid black boundary faces while neighbor chunks are not loaded yet. */
+    return 15;
+  }
+
+  return World_GetSkyLight(world, wx, y, wz);
 }
 
 static void assign_model_to_chunk(World *world, VoxelMeshData *mesh_data, Chunk *chunk,
