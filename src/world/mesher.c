@@ -2,6 +2,7 @@
 #include "world/world.h"
 #include "world/blocks.h"
 #include "world/chunk.h"
+#include "gfx/shader_paths.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -19,7 +20,11 @@ static bool opaque_ao_shader_loaded = false;
 
 static Shader get_cutout_shader(void) {
   if (!cutout_shader_loaded) {
-    cutout_shader = LoadShader("assets/shaders/cutout.vs", "assets/shaders/cutout.fs");
+    char vs_path[256];
+    char fs_path[256];
+    ShaderPaths_Resolve(vs_path, sizeof(vs_path), "cutout.vs");
+    ShaderPaths_Resolve(fs_path, sizeof(fs_path), "cutout.fs");
+    cutout_shader = LoadShader(vs_path, fs_path);
     cutout_shader_loaded = true;
   }
   return cutout_shader;
@@ -27,7 +32,11 @@ static Shader get_cutout_shader(void) {
 
 static Shader get_opaque_ao_shader(void) {
   if (!opaque_ao_shader_loaded) {
-    opaque_ao_shader = LoadShader("assets/shaders/opaque_ao.vs", "assets/shaders/opaque_ao.fs");
+    char vs_path[256];
+    char fs_path[256];
+    ShaderPaths_Resolve(vs_path, sizeof(vs_path), "opaque_ao.vs");
+    ShaderPaths_Resolve(fs_path, sizeof(fs_path), "opaque_ao.fs");
+    opaque_ao_shader = LoadShader(vs_path, fs_path);
 
     float aoMin = 0.60f;
     float aoCurve = 1.15f;

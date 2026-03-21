@@ -2,7 +2,7 @@
 
 in vec3 vertexPosition;
 in vec2 vertexTexCoord;
-in vec3 vertexNormal;
+//in vec3 vertexNormal;
 in vec4 vertexColor;    // rgb = face lighting/tint, a = baked AO
 
 uniform mat4 mvp;

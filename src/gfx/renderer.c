@@ -1,4 +1,5 @@
 #include "gfx/renderer.h"
+#include "gfx/shader_paths.h"
 
 #include "profiling/profiler.h"
 #include "raylib.h"
@@ -59,7 +60,9 @@ bool Renderer_Init(Renderer *renderer) {
 
   *renderer = (Renderer){0};
 
-  renderer->fxaa = LoadShader(0, "assets/shaders/postprocessing/fxaa.fs");
+  char fxaa_path[256];
+  ShaderPaths_Resolve(fxaa_path, sizeof(fxaa_path), "postprocessing/fxaa.fs");
+  renderer->fxaa = LoadShader(0, fxaa_path);
   if (renderer->fxaa.id == 0) {
     return false;
   }
