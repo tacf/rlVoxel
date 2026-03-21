@@ -1,6 +1,7 @@
 #ifndef RLVOXEL_BLOCKS_H
 #define RLVOXEL_BLOCKS_H
 
+#include <stdint.h>
 #include <voxel/block.h>
 
 /**
@@ -14,7 +15,8 @@
 #define FACE_EAST VOXEL_FACE_EAST
 
 /**
- * Block IDs for rl-voxel game.
+ * Block IDs for rl-voxel game. Smililarities with other games 
+ * are mere coincidences x)
  */
 typedef enum BlockId {
   BLOCK_AIR = 0,

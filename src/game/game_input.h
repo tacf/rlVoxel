@@ -17,6 +17,7 @@ typedef struct GameInputSnapshot {
   bool left_click_pressed;
   bool right_click_pressed;
 
+  float mouse_wheel_delta;
   Vector2 mouse_delta;
 } GameInputSnapshot;
 

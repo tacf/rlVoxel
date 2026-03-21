@@ -20,6 +20,7 @@ void Game_CaptureFrameInput(GameInputSnapshot *input) {
       .debug_menu_pressed = IsKeyPressed(KEY_F11),
       .left_click_pressed = IsMouseButtonPressed(MOUSE_BUTTON_LEFT),
       .right_click_pressed = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT),
+      .mouse_wheel_delta = GetMouseWheelMove(),
       .mouse_delta = GetMouseDelta(),
   };
 }
@@ -40,6 +41,7 @@ void Game_MergeFrameInput(GameInputSnapshot *pending, const GameInputSnapshot *f
   pending->debug_menu_pressed = pending->debug_menu_pressed || frame->debug_menu_pressed;
   pending->left_click_pressed = pending->left_click_pressed || frame->left_click_pressed;
   pending->right_click_pressed = pending->right_click_pressed || frame->right_click_pressed;
+  pending->mouse_wheel_delta += frame->mouse_wheel_delta;
   pending->mouse_delta = Vector2Add(pending->mouse_delta, frame->mouse_delta);
 }
 
@@ -52,5 +54,6 @@ void Game_ClearTickEdgeInput(GameInputSnapshot *input) {
   input->debug_menu_pressed = false;
   input->left_click_pressed = false;
   input->right_click_pressed = false;
+  input->mouse_wheel_delta = 0.0f;
   input->mouse_delta = (Vector2){0};
 }

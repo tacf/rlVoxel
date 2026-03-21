@@ -10,6 +10,8 @@
 #include "game/game_input.h"
 #include "world/world.h"
 
+#define PLAYER_HOTBAR_SLOTS 9
+
 typedef struct Player {
   Vector3 position;
   Vector3 previous_position;
@@ -21,10 +23,13 @@ typedef struct Player {
   float previous_pitch;
 
   bool on_ground;
+  uint8_t hotbar_blocks[PLAYER_HOTBAR_SLOTS];
+  int hotbar_index;
   uint8_t selected_block;
 } Player;
 
 void Player_Init(Player *player, Vector3 spawn_position);
+void Player_ApplyHotbarScroll(Player *player, float mouse_wheel_delta);
 void Player_Update(Player *player, const World *world, const GameInputSnapshot *input,
                    float tick_dt, bool mouse_look_enabled);
 
