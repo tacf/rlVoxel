@@ -96,7 +96,7 @@ BoundingBox Player_GetBoundsAt(const Player *player, Vector3 position) {
 
 void Player_Init(Player *player, Vector3 spawn_position) {
   static const uint8_t default_hotbar[PLAYER_HOTBAR_SLOTS] = {
-      BLOCK_STONE, BLOCK_GRASS, BLOCK_DIRT,  BLOCK_SAND,    BLOCK_GRAVEL,
+      BLOCK_STONE, BLOCK_GRASS,  BLOCK_DIRT,      BLOCK_SAND, BLOCK_GRAVEL,
       BLOCK_LOG,   BLOCK_LEAVES, BLOCK_SANDSTONE, BLOCK_ICE,
   };
 

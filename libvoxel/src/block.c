@@ -1,4 +1,5 @@
 #include "voxel/block.h"
+#include <stdint.h>
 
 bool VoxelBlock_IsSolid(const VoxelBlockRegistry *registry, uint8_t block_id) {
   if (!registry || block_id >= registry->count) {

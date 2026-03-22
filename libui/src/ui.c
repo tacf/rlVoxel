@@ -10,7 +10,6 @@
 #include <stdio.h>
 #include <string.h>
 
-
 typedef enum UiNodeType {
   UI_NODE_CONTAINER = 0,
   UI_NODE_TEXT,
@@ -183,8 +182,8 @@ static UiElementId ui_hash_id(UiElementId parent_id, const char *id) {
 }
 
 /* Convert abstract length values into screen-space units. */
-static float ui_resolve_length(const UiContext *ui, UiLength length, float parent_size, bool horizontal,
-                               float auto_value) {
+static float ui_resolve_length(const UiContext *ui, UiLength length, float parent_size,
+                               bool horizontal, float auto_value) {
   float value = auto_value;
 
   switch (length.kind) {
@@ -433,10 +432,8 @@ static Vector2 ui_measure_child_outer(UiContext *ui, int child_index, float pare
   UiNode *child = &ui->nodes[child_index];
   UiEdges margin = ui_scale_edges(ui, child->style.margin);
 
-  float child_available_width =
-      ui_maxf(0.0f, parent_content_width - margin.left - margin.right);
-  float child_available_height =
-      ui_maxf(0.0f, parent_content_height - margin.top - margin.bottom);
+  float child_available_width = ui_maxf(0.0f, parent_content_width - margin.left - margin.right);
+  float child_available_height = ui_maxf(0.0f, parent_content_height - margin.top - margin.bottom);
 
   Vector2 auto_size =
       ui_measure_auto_size(ui, child_index, child_available_width, child_available_height);
@@ -545,12 +542,12 @@ static void ui_layout_children(UiContext *ui, int node_index) {
 
     float child_available_width = ui_maxf(0.0f, content.width - margin.left - margin.right);
     float child_available_height = ui_maxf(0.0f, content.height - margin.top - margin.bottom);
-    Vector2 auto_size = ui_measure_auto_size(ui, child, child_available_width, child_available_height);
+    Vector2 auto_size =
+        ui_measure_auto_size(ui, child, child_available_width, child_available_height);
 
-    UiResolvedSize main_size = row ? ui_resolve_sizing(ui, child_node->style.width, main_available,
-                                                       true, auto_size.x)
-                                   : ui_resolve_sizing(ui, child_node->style.height, main_available,
-                                                       false, auto_size.y);
+    UiResolvedSize main_size =
+        row ? ui_resolve_sizing(ui, child_node->style.width, main_available, true, auto_size.x)
+            : ui_resolve_sizing(ui, child_node->style.height, main_available, false, auto_size.y);
 
     total_main += margin_main_before + main_size.value + margin_main_after;
     if (main_size.is_grow) {
@@ -592,12 +589,12 @@ static void ui_layout_children(UiContext *ui, int node_index) {
 
     float child_available_width = ui_maxf(0.0f, content.width - margin.left - margin.right);
     float child_available_height = ui_maxf(0.0f, content.height - margin.top - margin.bottom);
-    Vector2 auto_size = ui_measure_auto_size(ui, child, child_available_width, child_available_height);
+    Vector2 auto_size =
+        ui_measure_auto_size(ui, child, child_available_width, child_available_height);
 
-    UiResolvedSize main_size = row ? ui_resolve_sizing(ui, child_node->style.width, main_available,
-                                                       true, auto_size.x)
-                                   : ui_resolve_sizing(ui, child_node->style.height, main_available,
-                                                       false, auto_size.y);
+    UiResolvedSize main_size =
+        row ? ui_resolve_sizing(ui, child_node->style.width, main_available, true, auto_size.x)
+            : ui_resolve_sizing(ui, child_node->style.height, main_available, false, auto_size.y);
 
     float child_main = main_size.value;
     if (main_size.is_grow && total_grow_weight > 0.0f) {
@@ -619,7 +616,8 @@ static void ui_layout_children(UiContext *ui, int node_index) {
       align = UI_ALIGN_STRETCH;
     }
 
-    float child_cross_space = ui_maxf(0.0f, cross_available - margin_cross_before - margin_cross_after);
+    float child_cross_space =
+        ui_maxf(0.0f, cross_available - margin_cross_before - margin_cross_after);
     float child_cross = cross_size.value;
     if (align == UI_ALIGN_STRETCH) {
       child_cross = child_cross_space;
@@ -631,8 +629,8 @@ static void ui_layout_children(UiContext *ui, int node_index) {
     float child_cross_pos = cross_start + margin_cross_before;
     switch (align) {
     case UI_ALIGN_CENTER:
-      child_cross_pos =
-          cross_start + (cross_available - child_cross) * 0.5f + (margin_cross_before - margin_cross_after) * 0.5f;
+      child_cross_pos = cross_start + (cross_available - child_cross) * 0.5f +
+                        (margin_cross_before - margin_cross_after) * 0.5f;
       break;
     case UI_ALIGN_END:
       child_cross_pos = cross_start + cross_available - child_cross - margin_cross_after;
@@ -696,10 +694,11 @@ static void ui_update_state(UiContext *ui, const UiNode *node, const UiInputSnap
 static void ui_emit_rect_command(UiContext *ui, Rectangle rect, Color color) {
   UiDrawCommand command = {
       .type = UI_DRAW_COMMAND_RECT,
-      .data.rect = {
-          .rect = rect,
-          .color = color,
-      },
+      .data.rect =
+          {
+              .rect = rect,
+              .color = color,
+          },
   };
   ui_emit_draw_command(ui, &command);
 }
@@ -728,13 +727,14 @@ static void ui_emit_text_command(UiContext *ui, const UiNode *node) {
 
   UiDrawCommand command = {
       .type = UI_DRAW_COMMAND_TEXT,
-      .data.text = {
-          .text_offset = node->text_offset,
-          .position = draw_pos,
-          .font_size = draw_size,
-          .spacing = draw_spacing,
-          .color = node->text_style.color,
-      },
+      .data.text =
+          {
+              .text_offset = node->text_offset,
+              .position = draw_pos,
+              .font_size = draw_size,
+              .spacing = draw_spacing,
+              .color = node->text_style.color,
+          },
   };
   ui_emit_draw_command(ui, &command);
 }
@@ -757,12 +757,13 @@ static void ui_emit_image_command(UiContext *ui, const UiNode *node) {
 
   UiDrawCommand command = {
       .type = UI_DRAW_COMMAND_IMAGE,
-      .data.image = {
-          .texture = node->image_texture,
-          .source = node->image_source,
-          .dest = dest,
-          .tint = node->image_tint,
-      },
+      .data.image =
+          {
+              .texture = node->image_texture,
+              .source = node->image_source,
+              .dest = dest,
+              .tint = node->image_tint,
+          },
   };
   ui_emit_draw_command(ui, &command);
 }
@@ -806,8 +807,8 @@ static void ui_draw_command_immediate(UiContext *ui, const UiDrawCommand *comman
     if (command->data.image.texture.id == 0) {
       return;
     }
-    DrawTexturePro(command->data.image.texture, command->data.image.source, command->data.image.dest,
-                   (Vector2){0}, 0.0f, command->data.image.tint);
+    DrawTexturePro(command->data.image.texture, command->data.image.source,
+                   command->data.image.dest, (Vector2){0}, 0.0f, command->data.image.tint);
     return;
   }
 
@@ -852,8 +853,7 @@ static void ui_flush_image_command_run(const UiDrawCommand *commands, int start,
     }
 
     DrawTexturePro(commands[i].data.image.texture, commands[i].data.image.source,
-                   commands[i].data.image.dest, (Vector2){0}, 0.0f,
-                   commands[i].data.image.tint);
+                   commands[i].data.image.dest, (Vector2){0}, 0.0f, commands[i].data.image.tint);
   }
 }
 
@@ -943,8 +943,8 @@ bool UI_Init(UiContext *ui, int max_nodes, int text_capacity, int max_states) {
   ui->nodes = (UiNode *)ui_alloc_zero((size_t)ui->max_nodes, sizeof(UiNode));
   ui->text_buffer = (char *)ui_alloc_zero((size_t)ui->text_capacity, sizeof(char));
   ui->states = (UiPersistState *)ui_alloc_zero((size_t)ui->max_states, sizeof(UiPersistState));
-  ui->draw_commands = (UiDrawCommand *)ui_alloc_zero((size_t)ui->max_draw_commands,
-                                                     sizeof(UiDrawCommand));
+  ui->draw_commands =
+      (UiDrawCommand *)ui_alloc_zero((size_t)ui->max_draw_commands, sizeof(UiDrawCommand));
 
   if (ui->nodes == NULL || ui->text_buffer == NULL || ui->states == NULL ||
       ui->draw_commands == NULL) {
@@ -1242,8 +1242,7 @@ UiElementId UI_Image(UiContext *ui, const char *id, Texture2D texture, Rectangle
   node->image_texture = texture;
   node->image_source = source;
   if (node->image_source.width == 0.0f || node->image_source.height == 0.0f) {
-    node->image_source =
-        (Rectangle){0.0f, 0.0f, (float)texture.width, (float)texture.height};
+    node->image_source = (Rectangle){0.0f, 0.0f, (float)texture.width, (float)texture.height};
   }
   node->image_tint = tint;
   return node->id;

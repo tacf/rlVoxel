@@ -213,11 +213,7 @@ static float compute_cutout_luminance(const VoxelMesherCallbacks *cb, int wx, in
    * force the entire plant to black when side skylight is available.
    */
   static const int SAMPLE_OFFSETS[5][3] = {
-      {0, 0, 0},
-      {1, 0, 0},
-      {-1, 0, 0},
-      {0, 0, 1},
-      {0, 0, -1},
+      {0, 0, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1},
   };
 
   int max_light = 0;
