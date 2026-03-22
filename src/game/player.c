@@ -1,17 +1,33 @@
 #include "game/player.h"
 
 #include <math.h>
+#include <stdint.h>
+#include <string.h>
 
 #include <raymath.h>
 
 #include "constants.h"
+#include "game/game_input.h"
 #include "physics/physics.h"
 #include "raylib.h"
 #include "world/blocks.h"
+#include "world/world.h"
 
 /* Pitch is clamped to ~89 degrees to prevent gimbal lock */
 #define PITCH_LIMIT 1.55f
 #define MOUSE_SENSITIVITY 0.0023f
+
+static int player_wrap_hotbar_index(int index) {
+  if (PLAYER_HOTBAR_SLOTS <= 0) {
+    return 0;
+  }
+
+  int wrapped = index % PLAYER_HOTBAR_SLOTS;
+  if (wrapped < 0) {
+    wrapped += PLAYER_HOTBAR_SLOTS;
+  }
+  return wrapped;
+}
 
 static void apply_movement_acceleration(Player *player, float input_x, float input_z,
                                         float speed_per_tick, float tick_dt, bool sprint) {
@@ -79,6 +95,11 @@ BoundingBox Player_GetBoundsAt(const Player *player, Vector3 position) {
 }
 
 void Player_Init(Player *player, Vector3 spawn_position) {
+  static const uint8_t default_hotbar[PLAYER_HOTBAR_SLOTS] = {
+      BLOCK_STONE, BLOCK_GRASS,  BLOCK_DIRT,      BLOCK_SAND, BLOCK_GRAVEL,
+      BLOCK_LOG,   BLOCK_LEAVES, BLOCK_SANDSTONE, BLOCK_ICE,
+  };
+
   player->position = spawn_position;
   player->previous_position = spawn_position;
   player->velocity = (Vector3){0};
@@ -87,7 +108,32 @@ void Player_Init(Player *player, Vector3 spawn_position) {
   player->pitch = 0.0f;
   player->previous_pitch = 0.0f;
   player->on_ground = false;
-  player->selected_block = BLOCK_DIRT;
+
+  memcpy(player->hotbar_blocks, default_hotbar, sizeof(default_hotbar));
+  player->hotbar_index = 2; /* DIRT */
+  player->selected_block = player->hotbar_blocks[player->hotbar_index];
+}
+
+void Player_ApplyHotbarScroll(Player *player, float mouse_wheel_delta) {
+  if (player == NULL) {
+    return;
+  }
+
+  player->hotbar_index = player_wrap_hotbar_index(player->hotbar_index);
+
+  if (mouse_wheel_delta != 0.0f) {
+    int steps = (int)floorf(fabsf(mouse_wheel_delta));
+    if (steps < 1) {
+      steps = 1;
+    }
+
+    int direction = (mouse_wheel_delta > 0.0f) ? -1 : 1; /* Minecraft feel */
+    for (int i = 0; i < steps; i++) {
+      player->hotbar_index = player_wrap_hotbar_index(player->hotbar_index + direction);
+    }
+  }
+
+  player->selected_block = player->hotbar_blocks[player->hotbar_index];
 }
 
 void Player_Update(Player *player, const World *world, const GameInputSnapshot *input,

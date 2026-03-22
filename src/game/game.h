@@ -10,6 +10,7 @@
 #include "gfx/renderer.h"
 #include "game/game_input.h"
 #include "game/player.h"
+#include "ui/ui.h"
 #include "world/world.h"
 
 typedef struct Game {
@@ -21,6 +22,7 @@ typedef struct Game {
 
   Texture2D terrain_texture;
   Font font;
+  UiContext ui;
 
   int64_t seed;
   bool cursor_locked;
@@ -38,6 +40,7 @@ typedef struct Game {
   bool profiler_renderer_initialized;
   bool telemetry_initialized;
   bool imgui_initialized;
+  bool ui_initialized;
   bool world_initialized;
   bool renderer_initialized;
 } Game;

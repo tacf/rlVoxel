@@ -1,6 +1,7 @@
 #ifndef RLVOXEL_CHUNK_H
 #define RLVOXEL_CHUNK_H
 
+#include <stdint.h>
 #include <voxel/chunk.h>
 #include <raylib.h>
 

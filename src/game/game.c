@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include <raymath.h>
+#include <stdlib.h>
 
 #include "constants.h"
 #include "gfx/clouds.h"
@@ -14,7 +15,8 @@
 #include "game/raycast.h"
 #include "raylib.h"
 #include "rlcimgui.h"
-#include "world/worldgen.h"
+#include "ui/hud.h"
+#include "ui/ui.h"
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 #include "world/blocks.h"
@@ -23,6 +25,7 @@
 #include "profiling/profiler_renderer.h"
 #include "diagnostics/telemetry.h"
 
+/* Build raylib camera vectors from a player pose (position + yaw/pitch). */
 static void set_camera_from_pose(Game *game, Vector3 position, float yaw, float pitch) {
   Vector3 eye = {position.x, position.y + PLAYER_EYE_HEIGHT, position.z};
   float cos_pitch = cosf(pitch);
@@ -37,10 +40,15 @@ static void set_camera_from_pose(Game *game, Vector3 position, float yaw, float 
   game->camera.up = (Vector3){0.0f, 1.0f, 0.0f};
 }
 
+/* Snap camera directly to the player's current simulation pose. */
 static void sync_camera(Game *game) {
   set_camera_from_pose(game, game->player.position, game->player.yaw, game->player.pitch);
 }
 
+/*
+ * Interpolate camera pose between previous and current player states.
+ * This smooths rendering when simulation runs at a fixed tick rate.
+ */
 static void sync_camera_interpolated(Game *game, float alpha) {
   alpha = Clamp(alpha, 0.0f, 1.0f);
 
@@ -246,18 +254,24 @@ bool Game_Init(Game *game, int64_t seed, int render_distance) {
   io->ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 
   if (!Renderer_Init(&game->renderer)) {
-    goto fail;
+    Game_Shutdown(game);
   }
   game->renderer_initialized = true;
 
+  if (!UI_Init(&game->ui, UI_DEFAULT_MAX_NODES, UI_DEFAULT_TEXT_CAPACITY, UI_DEFAULT_MAX_STATES)) {
+    Game_Shutdown(game);
+  }
+  UI_SetReferenceResolution(&game->ui, 1280.0f, 720.0f);
+  game->ui_initialized = true;
+
   game->terrain_texture = LoadTexture("assets/atlas.png");
   if (game->terrain_texture.id == 0) {
-    goto fail;
+    Game_Shutdown(game);
   }
 
   game->font = LoadFontEx("assets/fonts/default.ttf", 20, NULL, 0);
   if (game->font.texture.id == 0) {
-    goto fail;
+    Game_Shutdown(game);
   }
   SetTextureFilter(game->font.texture, TEXTURE_FILTER_POINT);
 
@@ -296,14 +310,12 @@ bool Game_Init(Game *game, int64_t seed, int render_distance) {
   Clouds_Init(&game->clouds);
   return true;
 
-fail:
   Game_Shutdown(game);
-  return false;
 }
 
 void Game_Shutdown(Game *game) {
   if (!game) {
-    return;
+    exit(1);
   }
 
   if (game->world_initialized) {
@@ -316,6 +328,11 @@ void Game_Shutdown(Game *game) {
   if (game->font.texture.id != 0) {
     UnloadFont(game->font);
     game->font = (Font){0};
+  }
+
+  if (game->ui_initialized) {
+    UI_Shutdown(&game->ui);
+    game->ui_initialized = false;
   }
 
   if (game->renderer_initialized) {
@@ -347,6 +364,7 @@ void Game_Shutdown(Game *game) {
     rligShutdown();
     game->imgui_initialized = false;
   }
+  exit(0);
 }
 
 void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
@@ -406,6 +424,10 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
     }
   }
 
+  float hotbar_scroll =
+      (!game->show_debug_menu && game->cursor_locked) ? input->mouse_wheel_delta : 0.0f;
+  Player_ApplyHotbarScroll(&game->player, hotbar_scroll);
+
   Profiler_BeginSection("Player");
   Player_Update(&game->player, &game->world, input, tick_dt, game->cursor_locked);
   Profiler_EndSection();
@@ -458,26 +480,11 @@ void Game_Draw(Game *game, float alpha) {
 }
 
 void Game_DrawHUD(Game *game) {
-  float fps = GetFPS();
-  float yaw_deg = game->player.yaw * (180.0f / PI);
+  UI_BeginFrame(&game->ui, game->font, 20.0f);
+  HUD_BuildInfoPanel(&game->ui, &game->player, &game->world);
+  HUD_BuildHotbar(&game->ui, game->terrain_texture, &game->player);
 
-  int dir_idx = (int)floorf((yaw_deg + 202.5f) / 45.0f);
-  dir_idx = ((dir_idx % 8) + 8) % 8;
-
-  const char *dirs[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
-
-  const char *biome = WorldGen_GetBiomeName(&game->world.generator, (int)game->player.position.x,
-                                            (int)game->player.position.z);
-
-  DrawTextEx(game->font, TextFormat("FPS: %.0f", fps), (Vector2){10.0f, 20.0f}, 20.0f, 0.0f, WHITE);
-  DrawTextEx(game->font, TextFormat("Facing: %s", dirs[dir_idx]), (Vector2){10.0f, 45.0f}, 20.0f,
-             0.0f, WHITE);
-  DrawTextEx(game->font,
-             TextFormat("XYZ: %.2f, %.2f, %.2f", game->player.position.x, game->player.position.y,
-                        game->player.position.z),
-             (Vector2){10.0f, 70.0f}, 20.0f, 0.0f, WHITE);
-  DrawTextEx(game->font, TextFormat("Biome: %s", biome), (Vector2){10.0f, 95.0f}, 20.0f, 0.0f,
-             WHITE);
+  UI_EndFrame(&game->ui);
 
   if (game->cursor_locked) {
     int cx = GetScreenWidth() / 2;

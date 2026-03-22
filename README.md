@@ -57,6 +57,7 @@ cmake --build build -j
 - `Space`: jump (hold repeats on landing)
 - `Left Shift`: sprint
 - Mouse: look around (when cursor locked)
+- Mouse wheel: cycle hotbar selection (only when cursor is locked and debug menu is closed)
 - Left click: break block
 - Right click: place block
 - `Esc`: toggle cursor lock (closes debug menu first if open)
@@ -88,6 +89,8 @@ This folder also contains physics implementation, some math that is used to atte
 The `gfx` folder tries to segregate away the rendering part so it's not all jumbled together. And `profiler/`
 and `diagnostics` are dedicated to the _builtin_ ui and API for it.
 
+The generic retained UI API now lives in `libui/` (static library), while game-specific HUD composition remains in `src/ui/`.
+
 ### Design Choices
 
 Project wise some design choices were made
@@ -113,13 +116,19 @@ Project wise some design choices were made
 - Multi-pass chunk rendering (solid, translucent, cutout)
 - FastNoiseLite-backed world noise sampling (via `src/math/noise.c` wrapper API)
 - Built-in frame profiler and telemetry UI
+- Retained-mode UI module (`libui`) with resolution-independent sizing helpers
+- 9-slot hotbar with wheel selection driving currently held/placed block
 - Barebones Physics
 - Block breaking and placing
 - Block selection highlight
 
-## Systems Technical Details
+## Systems Documentation
 
 Check [docs/SYSTEMS.md](docs/SYSTEMS.md)
+
+## UI Documentation
+
+Check [docs/UI.md](docs/UI.md)
 
 ## TODO / Wishlist / Contribution Suggestions
 
@@ -131,9 +140,8 @@ Some features that i already have in mind were purposedly left out for the follo
 
 That said here's a very very short list of missing features
 
-- Clouds
-- All UI
-  - At least some ability to select a placeable block would be nice (the code already has structure in place)
+- Cloud polish (weather variation, better layering, horizon quality)
+- Expanded gameplay UI (inventory/crafting/menus beyond current HUD + hotbar)
 - Block Resistance
 - Multiplayer
 - Multi-threaded processing (and overall performace)
@@ -155,6 +163,7 @@ That said here's a very very short list of missing features
 - **Textures**: BetaPixel by [DragonDePlatino](https://www.planetminecraft.com/texture-pack/betapixel/) (with custom changes)
 - **Font**: [Unscii-16](http://viznut.fi/unscii/) and Font Awesome assets used by ImGui (see [license file](raylib-cimgui/extras/FontAwsome_LICENSE.txt))
 - **BetaSharp Project**: For the ideias for the profiler strategy and display
+- **Clay.h**: UI library/framework design is greatly based/inspired by [Clay.h](https://github.com/nicbarker/clay)
 
 If there is something that you feel is misrepresented please reach out.
 

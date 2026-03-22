@@ -32,6 +32,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(raylib stb fastnoiselite)
 
 add_subdirectory(libvoxel)
+add_subdirectory(libui)
 add_subdirectory(raylib-cimgui)
 
 set(SOURCES
@@ -40,6 +41,7 @@ set(SOURCES
     src/gfx/renderer.c
     src/gfx/shader_paths.c
     src/gfx/selection_highlight.c
+    src/ui/hud.c
     src/game/game.c
     src/game/game_input.c
     src/game/player.c
@@ -67,4 +69,4 @@ target_include_directories(rlVoxel PRIVATE
     ${CMAKE_SOURCE_DIR}/libvoxel/include
 )
 
-target_link_libraries(rlVoxel PRIVATE raylib m voxel raylib-cimgui)
+target_link_libraries(rlVoxel PRIVATE raylib m voxel ui raylib-cimgui)
