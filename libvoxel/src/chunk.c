@@ -38,6 +38,9 @@ void VoxelChunk_Shutdown(VoxelChunk *chunk, void (*unload_model)(void *)) {
     if (chunk->has_cutout_model && chunk->cutout_model) {
       unload_model(chunk->cutout_model);
     }
+    if (chunk->has_translucent_solid_model && chunk->translucent_solid_model) {
+      unload_model(chunk->translucent_solid_model);
+    }
   }
   free(chunk->blocks);
   free(chunk->skylight);

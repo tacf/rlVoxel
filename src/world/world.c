@@ -53,6 +53,7 @@ typedef struct ChunkSortEntry ChunkSortEntry;
 static ChunkSortEntry *g_solid_draw_entries = NULL;
 static ChunkSortEntry *g_translucent_draw_entries = NULL;
 static ChunkSortEntry *g_cutout_draw_entries = NULL;
+static ChunkSortEntry *g_translucent_solid_draw_entries = NULL;
 
 static inline int64_t make_chunk_key(int cx, int cz) { return ((int64_t)cx << 32) | (uint32_t)cz; }
 
@@ -527,7 +528,8 @@ void World_Init(World *world, int64_t seed, int render_distance, Texture2D terra
 
   LightUpdateQueue *queue = (LightUpdateQueue *)malloc(sizeof(LightUpdateQueue));
   if (queue != NULL) {
-    LightQueue_Init(queue, WORLD_LIGHT_QUEUE_OVERLOAD_THRESHOLD + WORLD_LIGHT_QUEUE_CAPACITY_HEADROOM);
+    LightQueue_Init(queue,
+                    WORLD_LIGHT_QUEUE_OVERLOAD_THRESHOLD + WORLD_LIGHT_QUEUE_CAPACITY_HEADROOM);
     world->light_queue_ptr = queue;
   }
 
@@ -571,6 +573,7 @@ void World_Shutdown(World *world) {
   arrfree(g_solid_draw_entries);
   arrfree(g_translucent_draw_entries);
   arrfree(g_cutout_draw_entries);
+  arrfree(g_translucent_solid_draw_entries);
 
   Mesher_Shutdown();
 
@@ -658,22 +661,12 @@ static int compare_chunk_translucent(const void *a, const void *b) {
   return 0;
 }
 
-void World_Draw(World *world, const Camera3D *camera, float ambient_multiplier) {
-  int cam_cx = floor_div16((int)floorf(camera->position.x));
-  int cam_cz = floor_div16((int)floorf(camera->position.z));
-  int rd = world->render_distance + 1;
-
-  float cam_x = camera->position.x;
-  float cam_z = camera->position.z;
-
-  unsigned char ambient_channel = (unsigned char)(Clamp(ambient_multiplier, 0.15f, 1.0f) * 255.0f);
-  Color solid_tint = {ambient_channel, ambient_channel, ambient_channel, 255};
-  Color translucent_tint = {ambient_channel, ambient_channel, ambient_channel, 180};
-  Color cutout_tint = {ambient_channel, ambient_channel, ambient_channel, 255};
-
+static void collect_visible_chunks(World *world, int cam_cx, int cam_cz, float cam_x, float cam_z,
+                                   int rd) {
   arrsetlen(g_solid_draw_entries, 0);
   arrsetlen(g_translucent_draw_entries, 0);
   arrsetlen(g_cutout_draw_entries, 0);
+  arrsetlen(g_translucent_solid_draw_entries, 0);
 
   int chunk_count = voxel_chunkmap_count(world->chunks);
   for (int i = 0; i < chunk_count; i++) {
@@ -683,67 +676,118 @@ void World_Draw(World *world, const Camera3D *camera, float ambient_multiplier) 
 
     int dx = chunk->cx - cam_cx;
     int dz = chunk->cz - cam_cz;
-    if (abs(dx) > rd || abs(dz) > rd) {
+    if (abs(dx) > rd || abs(dz) > rd)
       continue;
-    }
 
-    float chunk_center_x = (float)(chunk->cx * WORLD_CHUNK_SIZE_X) + WORLD_CHUNK_SIZE_X * 0.5f;
-    float chunk_center_z = (float)(chunk->cz * WORLD_CHUNK_SIZE_Z) + WORLD_CHUNK_SIZE_Z * 0.5f;
-    float dist_sq = (chunk_center_x - cam_x) * (chunk_center_x - cam_x) +
-                    (chunk_center_z - cam_z) * (chunk_center_z - cam_z);
+    float cx = (float)(chunk->cx * WORLD_CHUNK_SIZE_X) + WORLD_CHUNK_SIZE_X * 0.5f;
+    float cz = (float)(chunk->cz * WORLD_CHUNK_SIZE_Z) + WORLD_CHUNK_SIZE_Z * 0.5f;
+    float dist_sq = (cx - cam_x) * (cx - cam_x) + (cz - cam_z) * (cz - cam_z);
 
-    if (chunk->has_solid_model) {
-      arrput(g_solid_draw_entries, ((ChunkSortEntry){.chunk = chunk, .dist_sq = dist_sq}));
-    }
-
-    if (chunk->has_translucent_model) {
-      arrput(g_translucent_draw_entries, ((ChunkSortEntry){.chunk = chunk, .dist_sq = dist_sq}));
-    }
-
-    if (chunk->has_cutout_model) {
-      arrput(g_cutout_draw_entries, ((ChunkSortEntry){.chunk = chunk, .dist_sq = dist_sq}));
-    }
+    if (chunk->has_solid_model && chunk->solid_model)
+      arrput(g_solid_draw_entries, ((ChunkSortEntry){chunk, dist_sq}));
+    if (chunk->has_cutout_model && chunk->cutout_model)
+      arrput(g_cutout_draw_entries, ((ChunkSortEntry){chunk, dist_sq}));
+    if (chunk->has_translucent_solid_model && chunk->translucent_solid_model)
+      arrput(g_translucent_solid_draw_entries, ((ChunkSortEntry){chunk, dist_sq}));
+    if (chunk->has_translucent_model && chunk->translucent_model)
+      arrput(g_translucent_draw_entries, ((ChunkSortEntry){chunk, dist_sq}));
   }
+}
+
+static void sort_chunks(ChunkSortEntry *entries, ptrdiff_t count, bool front_to_back) {
+  if (count > 1) {
+    qsort(entries, (size_t)count, sizeof(ChunkSortEntry),
+          front_to_back ? compare_chunk_solid : compare_chunk_translucent);
+  }
+}
+
+/*
+ * Render pipeline: see docs/RENDERING.md for full documentation on
+ * pass architecture, GL state, shaders, and raylib integration.
+ */
+static void draw_chunk_models(ChunkSortEntry *entries, ptrdiff_t count, size_t model_offset,
+                              Color tint) {
+  for (ptrdiff_t i = 0; i < count; i++) {
+    Chunk *chunk = entries[i].chunk;
+    Model *model = *(Model **)((char *)chunk + model_offset);
+    if (model == NULL)
+      continue;
+    Vector3 pos = {(float)(chunk->cx * WORLD_CHUNK_SIZE_X), 0.0f,
+                   (float)(chunk->cz * WORLD_CHUNK_SIZE_Z)};
+    DrawModel(*model, pos, 1.0f, tint);
+  }
+}
+
+static Color make_ambient_tint(unsigned char ambient, unsigned char alpha) {
+  return (Color){ambient, ambient, ambient, alpha};
+}
+
+/*
+ * Render pass 1: SOLID
+ * Depth: read+write. Blend: none. Cull: back faces. Sort: front-to-back.
+ */
+static void draw_solid_pass(ChunkSortEntry *entries, ptrdiff_t count, Color tint) {
+  draw_chunk_models(entries, count, offsetof(Chunk, solid_model), tint);
+}
+
+/*
+ * Render pass 2: CUTOUT (leaves, plants)
+ * Depth: read+write. Blend: none (alpha discard in shader). Cull: off. Sort: back-to-front.
+ */
+static void draw_cutout_pass(ChunkSortEntry *entries, ptrdiff_t count, Color tint) {
+  rlDisableBackfaceCulling();
+  draw_chunk_models(entries, count, offsetof(Chunk, cutout_model), tint);
+  rlEnableBackfaceCulling();
+}
+
+/*
+ * Render pass 3: TRANSLUCENT SOLID (ice, glass)
+ * Depth: read+write. Blend: alpha. Cull: off. Sort: front-to-back.
+ */
+static void draw_translucent_solid_pass(ChunkSortEntry *entries, ptrdiff_t count, Color tint) {
+  rlDisableBackfaceCulling();
+  draw_chunk_models(entries, count, offsetof(Chunk, translucent_solid_model), tint);
+  rlEnableBackfaceCulling();
+}
+
+/*
+ * Render pass 4: WATER (no depth write)
+ * Depth: read only. Blend: alpha. Cull: off. Sort: back-to-front.
+ */
+static void draw_water_pass(ChunkSortEntry *entries, ptrdiff_t count, Color tint) {
+  rlDisableBackfaceCulling();
+  rlDisableDepthMask();
+  draw_chunk_models(entries, count, offsetof(Chunk, translucent_model), tint);
+  rlEnableDepthMask();
+  rlEnableBackfaceCulling();
+}
+
+void World_Draw(World *world, const Camera3D *camera, float ambient_multiplier) {
+  int cam_cx = floor_div16((int)floorf(camera->position.x));
+  int cam_cz = floor_div16((int)floorf(camera->position.z));
+  int rd = world->render_distance + 1;
+
+  unsigned char a = (unsigned char)(Clamp(ambient_multiplier, 0.15f, 1.0f) * 255.0f);
+  Color solid_tint = make_ambient_tint(a, 255);
+  Color cutout_tint = make_ambient_tint(a, 255);
+  Color translucent_solid_tint = make_ambient_tint(a, 255);
+  Color water_tint = make_ambient_tint(a, 180);
+
+  collect_visible_chunks(world, cam_cx, cam_cz, camera->position.x, camera->position.z, rd);
 
   ptrdiff_t solid_count = arrlen(g_solid_draw_entries);
-  ptrdiff_t translucent_count = arrlen(g_translucent_draw_entries);
   ptrdiff_t cutout_count = arrlen(g_cutout_draw_entries);
+  ptrdiff_t tsolid_count = arrlen(g_translucent_solid_draw_entries);
+  ptrdiff_t water_count = arrlen(g_translucent_draw_entries);
 
-  if (solid_count > 1) {
-    qsort(g_solid_draw_entries, (size_t)solid_count, sizeof(ChunkSortEntry), compare_chunk_solid);
-  }
-  if (translucent_count > 1) {
-    qsort(g_translucent_draw_entries, (size_t)translucent_count, sizeof(ChunkSortEntry),
-          compare_chunk_translucent);
-  }
-  if (cutout_count > 1) {
-    qsort(g_cutout_draw_entries, (size_t)cutout_count, sizeof(ChunkSortEntry),
-          compare_chunk_translucent);
-  }
+  sort_chunks(g_solid_draw_entries, solid_count, true);
+  sort_chunks(g_cutout_draw_entries, cutout_count, false);
+  sort_chunks(g_translucent_solid_draw_entries, tsolid_count, true);
+  sort_chunks(g_translucent_draw_entries, water_count, false);
 
-  for (ptrdiff_t i = 0; i < solid_count; i++) {
-    Chunk *chunk = g_solid_draw_entries[i].chunk;
-    Vector3 chunk_pos = {(float)(chunk->cx * WORLD_CHUNK_SIZE_X), 0.0f,
-                         (float)(chunk->cz * WORLD_CHUNK_SIZE_Z)};
-    DrawModel(*(Model *)chunk->solid_model, chunk_pos, 1.0f, solid_tint);
-  }
-
-  /* Disable backface culling for translucent (water) and cutout (plants) */
-  rlDisableBackfaceCulling();
-
-  for (ptrdiff_t i = 0; i < translucent_count; i++) {
-    Chunk *chunk = g_translucent_draw_entries[i].chunk;
-    Vector3 chunk_pos = {(float)(chunk->cx * WORLD_CHUNK_SIZE_X), 0.0f,
-                         (float)(chunk->cz * WORLD_CHUNK_SIZE_Z)};
-    DrawModel(*(Model *)chunk->translucent_model, chunk_pos, 1.0f, translucent_tint);
-  }
-
-  for (ptrdiff_t i = 0; i < cutout_count; i++) {
-    Chunk *chunk = g_cutout_draw_entries[i].chunk;
-    Vector3 chunk_pos = {(float)(chunk->cx * WORLD_CHUNK_SIZE_X), 0.0f,
-                         (float)(chunk->cz * WORLD_CHUNK_SIZE_Z)};
-    DrawModel(*(Model *)chunk->cutout_model, chunk_pos, 1.0f, cutout_tint);
-  }
-
-  rlEnableBackfaceCulling();
+  draw_solid_pass(g_solid_draw_entries, solid_count, solid_tint);
+  draw_cutout_pass(g_cutout_draw_entries, cutout_count, cutout_tint);
+  draw_translucent_solid_pass(g_translucent_solid_draw_entries, tsolid_count,
+                              translucent_solid_tint);
+  draw_water_pass(g_translucent_draw_entries, water_count, water_tint);
 }

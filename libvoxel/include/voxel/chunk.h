@@ -24,9 +24,11 @@ typedef struct VoxelChunk {
   bool has_solid_model;
   bool has_translucent_model;
   bool has_cutout_model;
+  bool has_translucent_solid_model;
   void *solid_model;
   void *translucent_model;
   void *cutout_model;
+  void *translucent_solid_model;
 } VoxelChunk;
 
 void VoxelChunk_Init(VoxelChunk *chunk, int cx, int cz);

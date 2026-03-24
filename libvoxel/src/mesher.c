@@ -419,11 +419,12 @@ static void append_cross_plant(VoxelMeshData *mesh, const VoxelMesherConfig *con
 
 void VoxelMesher_BuildChunk(const VoxelChunk *chunk, const VoxelBlockRegistry *registry,
                             const VoxelMesherConfig *config, const VoxelMesherCallbacks *cb,
-                            VoxelMeshData *solid, VoxelMeshData *translucent,
-                            VoxelMeshData *cutout) {
+                            VoxelMeshData *solid, VoxelMeshData *cutout,
+                            VoxelMeshData *translucent_solid, VoxelMeshData *water) {
   VoxelMeshData_Clear(solid);
-  VoxelMeshData_Clear(translucent);
   VoxelMeshData_Clear(cutout);
+  VoxelMeshData_Clear(translucent_solid);
+  VoxelMeshData_Clear(water);
 
   /* Water surface height constant */
   const float EXPOSED_WATER_HEIGHT = 0.90f;
@@ -501,9 +502,20 @@ void VoxelMesher_BuildChunk(const VoxelChunk *chunk, const VoxelBlockRegistry *r
           continue;
         }
 
+        bool is_ice = VoxelBlock_IsTranslucent(registry, block_id) && (block_id == 79);
         bool is_translucent_block = VoxelBlock_IsTranslucent(registry, block_id);
-        VoxelMeshData *target_mesh = is_translucent_block ? translucent : solid;
-        uint8_t alpha = is_translucent_block ? 170 : 255;
+        VoxelMeshData *target_mesh;
+        uint8_t alpha;
+        if (is_ice) {
+          target_mesh = translucent_solid;
+          alpha = 230;
+        } else if (is_translucent_block) {
+          target_mesh = water;
+          alpha = 170;
+        } else {
+          target_mesh = solid;
+          alpha = 255;
+        }
 
         for (int face = 0; face < 6; face++) {
           int nx = wx + NEIGHBOR_OFFSETS[face][0];

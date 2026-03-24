@@ -55,19 +55,20 @@ void VoxelMeshData_Clear(VoxelMeshData *mesh);
 
 /**
  * Generate mesh data for a chunk.
- * Outputs three separate meshes: solid, translucent, and cutout (plants).
+ * Outputs four separate meshes: solid, cutout, ice, and water.
  *
  * @param chunk The chunk to mesh
  * @param registry Block registry for querying block properties
  * @param config Mesher configuration
  * @param callbacks Callbacks for querying world data
  * @param solid Output mesh for solid blocks
- * @param translucent Output mesh for translucent blocks (water, ice)
  * @param cutout Output mesh for cutout blocks (grass, leaves)
+ * @param ice Output mesh for ice (translucent, renders before water)
+ * @param water Output mesh for water/lava (translucent, renders last)
  */
 void VoxelMesher_BuildChunk(const VoxelChunk *chunk, const VoxelBlockRegistry *registry,
                             const VoxelMesherConfig *config, const VoxelMesherCallbacks *callbacks,
-                            VoxelMeshData *solid, VoxelMeshData *translucent,
-                            VoxelMeshData *cutout);
+                            VoxelMeshData *solid, VoxelMeshData *cutout,
+                            VoxelMeshData *translucent_solid, VoxelMeshData *water);
 
 #endif

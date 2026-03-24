@@ -1,4 +1,6 @@
 #include "world/chunk.h"
+#include "raylib.h"
+#include "voxel/chunk.h"
 #include "world/blocks.h"
 
 #include <stdlib.h>
@@ -19,6 +21,11 @@ void Chunk_Shutdown(Chunk *chunk) {
     UnloadModel(*(Model *)chunk->cutout_model);
     free(chunk->cutout_model);
     chunk->cutout_model = NULL;
+  }
+  if (chunk->has_translucent_solid_model && chunk->translucent_solid_model) {
+    UnloadModel(*(Model *)chunk->translucent_solid_model);
+    free(chunk->translucent_solid_model);
+    chunk->translucent_solid_model = NULL;
   }
   VoxelChunk_Shutdown(chunk, NULL);
 }

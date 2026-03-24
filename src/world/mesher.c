@@ -18,6 +18,9 @@ static bool cutout_shader_loaded = false;
 static Shader opaque_ao_shader = {0};
 static bool opaque_ao_shader_loaded = false;
 
+static Shader translucent_shader = {0};
+static bool translucent_shader_loaded = false;
+
 static int floor_div16(int x) {
   if (x >= 0) {
     return x >> 4;
@@ -62,6 +65,18 @@ static Shader get_opaque_ao_shader(void) {
   return opaque_ao_shader;
 }
 
+static Shader get_translucent_shader(void) {
+  if (!translucent_shader_loaded) {
+    char vs_path[256];
+    char fs_path[256];
+    ShaderPaths_Resolve(vs_path, sizeof(vs_path), "translucent.vs");
+    ShaderPaths_Resolve(fs_path, sizeof(fs_path), "translucent.fs");
+    translucent_shader = LoadShader(vs_path, fs_path);
+    translucent_shader_loaded = true;
+  }
+  return translucent_shader;
+}
+
 /* Callback implementations for libvoxel mesher */
 static uint8_t cb_get_world_block(void *world_data, int wx, int y, int wz) {
   return World_GetBlock((World *)world_data, wx, y, wz);
@@ -86,8 +101,8 @@ static int cb_get_world_skylight(void *world_data, int wx, int y, int wz) {
   return World_GetSkyLight(world, wx, y, wz);
 }
 
-static void assign_model_to_chunk(World *world, VoxelMeshData *mesh_data, Chunk *chunk,
-                                  bool translucent, bool cutout) {
+static void assign_model_to_chunk(World *world, VoxelMeshData *mesh_data, Chunk *chunk, bool cutout,
+                                  bool translucent_solid, bool water) {
   /* Free existing model */
   void **model_ptr;
   bool *has_model;
@@ -95,7 +110,10 @@ static void assign_model_to_chunk(World *world, VoxelMeshData *mesh_data, Chunk 
   if (cutout) {
     model_ptr = &chunk->cutout_model;
     has_model = &chunk->has_cutout_model;
-  } else if (translucent) {
+  } else if (translucent_solid) {
+    model_ptr = &chunk->translucent_solid_model;
+    has_model = &chunk->has_translucent_solid_model;
+  } else if (water) {
     model_ptr = &chunk->translucent_model;
     has_model = &chunk->has_translucent_model;
   } else {
@@ -148,7 +166,9 @@ static void assign_model_to_chunk(World *world, VoxelMeshData *mesh_data, Chunk 
 
   if (cutout) {
     model.materials[0].shader = get_cutout_shader();
-  } else if (!translucent) {
+  } else if (translucent_solid || water) {
+    model.materials[0].shader = get_translucent_shader();
+  } else {
     model.materials[0].shader = get_opaque_ao_shader();
   }
 
@@ -181,19 +201,22 @@ void Mesher_RebuildChunk(struct World *world, Chunk *chunk, float ambient_multip
   };
 
   VoxelMeshData solid_mesh = {0};
-  VoxelMeshData translucent_mesh = {0};
   VoxelMeshData cutout_mesh = {0};
+  VoxelMeshData translucent_solid_mesh = {0};
+  VoxelMeshData water_mesh = {0};
 
-  VoxelMesher_BuildChunk(chunk, &g_block_registry, &config, &callbacks, &solid_mesh,
-                         &translucent_mesh, &cutout_mesh);
+  VoxelMesher_BuildChunk(chunk, &g_block_registry, &config, &callbacks, &solid_mesh, &cutout_mesh,
+                         &translucent_solid_mesh, &water_mesh);
 
-  assign_model_to_chunk(world, &solid_mesh, chunk, false, false);
-  assign_model_to_chunk(world, &translucent_mesh, chunk, true, false);
-  assign_model_to_chunk(world, &cutout_mesh, chunk, false, true);
+  assign_model_to_chunk(world, &solid_mesh, chunk, false, false, false);
+  assign_model_to_chunk(world, &cutout_mesh, chunk, true, false, false);
+  assign_model_to_chunk(world, &translucent_solid_mesh, chunk, false, true, false);
+  assign_model_to_chunk(world, &water_mesh, chunk, false, false, true);
 
   VoxelMeshData_Free(&solid_mesh);
-  VoxelMeshData_Free(&translucent_mesh);
   VoxelMeshData_Free(&cutout_mesh);
+  VoxelMeshData_Free(&translucent_solid_mesh);
+  VoxelMeshData_Free(&water_mesh);
 }
 
 void Mesher_Shutdown(void) {
@@ -208,4 +231,10 @@ void Mesher_Shutdown(void) {
   }
   opaque_ao_shader = (Shader){0};
   opaque_ao_shader_loaded = false;
+
+  if (translucent_shader_loaded && translucent_shader.id != 0) {
+    UnloadShader(translucent_shader);
+  }
+  translucent_shader = (Shader){0};
+  translucent_shader_loaded = false;
 }
