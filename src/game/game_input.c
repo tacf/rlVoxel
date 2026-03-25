@@ -1,6 +1,7 @@
 #include "game/game_input.h"
 
 #include <raymath.h>
+#include <string.h>
 
 #include "raylib.h"
 
@@ -56,4 +57,40 @@ void Game_ClearTickEdgeInput(GameInputSnapshot *input) {
   input->right_click_pressed = false;
   input->mouse_wheel_delta = 0.0f;
   input->mouse_delta = (Vector2){0};
+}
+
+void Game_BuildGameplayInputCmd(const GameInputSnapshot *input, uint32_t tick_id,
+                                uint8_t selected_block, bool gameplay_enabled,
+                                GameplayInputCmd *out_cmd) {
+  if (out_cmd == NULL) {
+    return;
+  }
+
+  memset(out_cmd, 0, sizeof(*out_cmd));
+  out_cmd->tick_id = tick_id;
+  out_cmd->selected_block = selected_block;
+
+  if (!gameplay_enabled || input == NULL) {
+    return;
+  }
+
+  if (input->move_forward)
+    out_cmd->buttons |= GAMEPLAY_INPUT_MOVE_FORWARD;
+  if (input->move_backward)
+    out_cmd->buttons |= GAMEPLAY_INPUT_MOVE_BACKWARD;
+  if (input->move_left)
+    out_cmd->buttons |= GAMEPLAY_INPUT_MOVE_LEFT;
+  if (input->move_right)
+    out_cmd->buttons |= GAMEPLAY_INPUT_MOVE_RIGHT;
+  if (input->sprint)
+    out_cmd->buttons |= GAMEPLAY_INPUT_SPRINT;
+  if (input->jump_held)
+    out_cmd->buttons |= GAMEPLAY_INPUT_JUMP_HELD;
+  if (input->left_click_pressed)
+    out_cmd->buttons |= GAMEPLAY_INPUT_LEFT_CLICK;
+  if (input->right_click_pressed)
+    out_cmd->buttons |= GAMEPLAY_INPUT_RIGHT_CLICK;
+
+  out_cmd->look_delta_x = input->mouse_delta.x;
+  out_cmd->look_delta_y = input->mouse_delta.y;
 }

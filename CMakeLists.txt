@@ -6,6 +6,9 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu11")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+option(RLVOXEL_BUILD_TESTS "Build rlVoxel runtime tests" ON)
+
+find_package(Threads REQUIRED)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -14,6 +17,10 @@ FetchContent_Declare(
     GIT_TAG master
     GIT_SHALLOW TRUE
 )
+
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
     stb
@@ -29,14 +36,29 @@ FetchContent_Declare(
     GIT_SHALLOW TRUE
 )
 
-FetchContent_MakeAvailable(raylib stb fastnoiselite)
+FetchContent_Declare(
+    enet
+    GIT_REPOSITORY https://github.com/lsalzman/enet.git
+    GIT_TAG v1.3.18
+    GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(raylib stb fastnoiselite enet)
+
+if (TARGET enet)
+    set(ENET_TARGET enet)
+elseif(TARGET enet_static)
+    set(ENET_TARGET enet_static)
+else()
+    message(FATAL_ERROR "ENet target not found after FetchContent_MakeAvailable(enet)")
+endif()
 
 add_subdirectory(libvoxel)
 add_subdirectory(libui)
+add_subdirectory(libnet)
 add_subdirectory(raylib-cimgui)
 
-set(SOURCES
-    src/app.c
+set(RUNTIME_SOURCES
     src/gfx/clouds.c
     src/gfx/renderer.c
     src/gfx/shader_paths.c
@@ -59,14 +81,45 @@ set(SOURCES
     src/profiling/profiler_renderer.c
     src/diagnostics/telemetry.c
     src/diagnostics/process_stats.c
+    src/server/server_core.c
 )
 
-add_executable(rlVoxel ${SOURCES})
-target_include_directories(rlVoxel PRIVATE
+add_library(rlvoxel_runtime STATIC ${RUNTIME_SOURCES})
+target_include_directories(rlvoxel_runtime PUBLIC
     src
     ${stb_SOURCE_DIR}
     ${fastnoiselite_SOURCE_DIR}/C
     ${CMAKE_SOURCE_DIR}/libvoxel/include
 )
 
-target_link_libraries(rlVoxel PRIVATE raylib m voxel ui raylib-cimgui)
+target_link_libraries(rlvoxel_runtime PUBLIC raylib voxel ui net raylib-cimgui
+                                             Threads::Threads)
+if (NOT WIN32)
+    target_link_libraries(rlvoxel_runtime PUBLIC m)
+endif()
+
+add_executable(rlVoxel src/app.c)
+target_link_libraries(rlVoxel PRIVATE rlvoxel_runtime)
+
+add_executable(rlVoxelServer src/server/server_main.c)
+target_link_libraries(rlVoxelServer PRIVATE rlvoxel_runtime)
+
+if (RLVOXEL_BUILD_TESTS)
+    enable_testing()
+
+    add_executable(rlvoxel_test_protocol tests/protocol_roundtrip_test.c)
+    target_link_libraries(rlvoxel_test_protocol PRIVATE net)
+    add_test(NAME rlvoxel_protocol_roundtrip COMMAND rlvoxel_test_protocol)
+
+    add_executable(rlvoxel_test_local_transport tests/local_transport_test.c)
+    target_link_libraries(rlvoxel_test_local_transport PRIVATE net)
+    add_test(NAME rlvoxel_local_transport COMMAND rlvoxel_test_local_transport)
+
+    add_executable(rlvoxel_test_server_determinism tests/server_determinism_test.c)
+    target_link_libraries(rlvoxel_test_server_determinism PRIVATE rlvoxel_runtime)
+    add_test(NAME rlvoxel_server_determinism COMMAND rlvoxel_test_server_determinism)
+
+    add_executable(rlvoxel_test_net_facade tests/net_facade_test.c)
+    target_link_libraries(rlvoxel_test_net_facade PRIVATE net)
+    add_test(NAME rlvoxel_net_facade COMMAND rlvoxel_test_net_facade)
+endif()

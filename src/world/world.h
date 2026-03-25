@@ -53,6 +53,12 @@ typedef struct World {
 
   /** Base ambient light level (0-15) */
   int ambient_darkness;
+
+  /** True when this world performs simulation-side chunk management/generation. */
+  bool authoritative_mode;
+
+  /** True when this world runs meshing and supports draw passes. */
+  bool meshing_enabled;
 } World;
 
 /**
@@ -62,6 +68,16 @@ typedef struct World {
  * @param terrain_texture The texture atlas to use for blocks
  */
 void World_Init(World *world, int64_t seed, int render_distance, Texture2D terrain_texture);
+
+/**
+ * Initializes an authoritative server world without meshing/draw work.
+ */
+void World_InitServer(World *world, int64_t seed, int render_distance);
+
+/**
+ * Initializes a client-side replicated world (no procedural generation/loading).
+ */
+void World_InitReplicated(World *world, int render_distance, Texture2D terrain_texture);
 
 /**
  * Shuts down the world and frees all resources.
@@ -160,5 +176,27 @@ bool World_IsAABBInLava(const World *world, BoundingBox box);
  * Returns value between 0.2 and 1.0
  */
 float World_GetAmbientMultiplier(const World *world);
+
+/**
+ * Applies network chunk payload data to a chunk, creating the chunk if needed.
+ */
+bool World_ApplyChunkData(World *world, int cx, int cz, const uint8_t *blocks, size_t blocks_size,
+                          const uint8_t *skylight, size_t skylight_size, const uint8_t *heightmap,
+                          size_t heightmap_size);
+
+/**
+ * Applies a network block delta update in replicated mode.
+ */
+bool World_ApplyBlockDelta(World *world, int x, int y, int z, uint8_t block_id, uint8_t skylight);
+
+/**
+ * Removes a chunk from the world map (for chunk unload replication).
+ */
+bool World_RemoveChunk(World *world, int cx, int cz);
+
+/**
+ * Overrides world time from authoritative snapshots.
+ */
+void World_SetTime(World *world, float world_time);
 
 #endif /* RLVOXEL_WORLD_H */

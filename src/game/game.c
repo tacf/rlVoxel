@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <raymath.h>
 #include <stdlib.h>
@@ -13,6 +14,7 @@
 #include "game/game_input.h"
 #include "game/player.h"
 #include "game/raycast.h"
+#include "net/net.h"
 #include "raylib.h"
 #include "rlcimgui.h"
 #include "ui/hud.h"
@@ -97,8 +99,146 @@ static void close_debug_menu(Game *game) {
   }
 }
 
+static bool game_is_paused(Game *game) { return game->show_escape_menu || game->show_options; }
+
+static void open_escape_menu(Game *game) {
+  if (game_is_paused(game)) {
+    return;
+  }
+
+  game->show_escape_menu = true;
+  game->lock_before_escape_menu = game->cursor_locked || game->pending_lock_request;
+  game->pending_lock_request = false;
+  set_cursor_locked(game, false);
+}
+
+static void close_escape_menu(Game *game) {
+  if (!game_is_paused(game)) {
+    return;
+  }
+
+  game->show_escape_menu = false;
+  game->show_options = false;
+  if (game->lock_before_escape_menu) {
+    game->pending_lock_request = true;
+    set_cursor_locked(game, true);
+  } else {
+    game->pending_lock_request = false;
+    set_cursor_locked(game, false);
+  }
+}
+
+static bool game_send_hello(Game *game, int requested_render_distance) {
+  NetHello hello = {
+      .requested_render_distance = (requested_render_distance > 0)
+                                       ? (uint32_t)requested_render_distance
+                                       : (uint32_t)DEFAULT_RENDER_DISTANCE,
+  };
+
+  if (game == NULL || game->net == NULL) {
+    return false;
+  }
+
+  return Net_SendHello(game->net, game->network_sequence++, game->network_tick_counter, &hello);
+}
+
+static bool game_send_input(Game *game, const GameInputSnapshot *input, bool gameplay_enabled) {
+  GameplayInputCmd cmd;
+
+  if (game == NULL || game->net == NULL || !game->connected) {
+    return false;
+  }
+
+  Game_BuildGameplayInputCmd(input, game->network_tick_counter, game->player.selected_block,
+                             gameplay_enabled, &cmd);
+
+  return Net_SendInputCmd(game->net, game->network_sequence++, game->network_tick_counter, &cmd);
+}
+
+static void game_apply_player_state(Game *game, const AuthoritativePlayerState *state) {
+  if (game == NULL || state == NULL) {
+    return;
+  }
+
+  game->player.previous_position = game->player.position;
+  game->player.previous_yaw = game->player.yaw;
+  game->player.previous_pitch = game->player.pitch;
+
+  game->player.position = (Vector3){state->position_x, state->position_y, state->position_z};
+  game->player.velocity = (Vector3){state->velocity_x, state->velocity_y, state->velocity_z};
+  game->player.yaw = state->yaw;
+  game->player.pitch = state->pitch;
+  game->player.on_ground = state->on_ground != 0;
+
+  World_SetTime(&game->world, state->world_time);
+}
+
+static void game_process_network(Game *game) {
+  NetEvent event;
+
+  if (game == NULL || game->net == NULL) {
+    return;
+  }
+
+  Net_Update(game->net, 0);
+
+  while (Net_PollEvent(game->net, &event)) {
+    if (event.type == NET_EVENT_CONNECTED) {
+      game->connected = true;
+      game_send_hello(game, game->world.render_distance);
+    } else if (event.type == NET_EVENT_DISCONNECTED) {
+      game->connected = false;
+      game->welcome_received = false;
+    } else if (event.type == NET_EVENT_MESSAGE) {
+      switch (event.message_type) {
+      case NET_MSG_S2C_WELCOME:
+        game->welcome_received = true;
+        game->connected = true;
+        game->seed = event.payload.welcome.seed;
+        game->network_tick_rate = (event.payload.welcome.tick_rate > 0)
+                                      ? event.payload.welcome.tick_rate
+                                      : (int)GAME_TICK_RATE;
+        if (event.payload.welcome.render_distance >= 2) {
+          game->world.render_distance = event.payload.welcome.render_distance;
+        }
+        break;
+
+      case NET_MSG_S2C_PLAYER_STATE:
+        game_apply_player_state(game, &event.payload.player_state);
+        break;
+
+      case NET_MSG_S2C_CHUNK_DATA:
+        World_ApplyChunkData(&game->world, event.payload.chunk_data.cx, event.payload.chunk_data.cz,
+                             event.payload.chunk_data.blocks, sizeof(event.payload.chunk_data.blocks),
+                             event.payload.chunk_data.skylight, sizeof(event.payload.chunk_data.skylight),
+                             event.payload.chunk_data.heightmap,
+                             sizeof(event.payload.chunk_data.heightmap));
+        break;
+
+      case NET_MSG_S2C_BLOCK_DELTA:
+        World_ApplyBlockDelta(&game->world, event.payload.block_delta.x, event.payload.block_delta.y,
+                              event.payload.block_delta.z, event.payload.block_delta.block_id,
+                              event.payload.block_delta.skylight);
+        break;
+
+      case NET_MSG_S2C_CHUNK_UNLOAD:
+        World_RemoveChunk(&game->world, event.payload.chunk_unload.cx, event.payload.chunk_unload.cz);
+        break;
+
+      case NET_MSG_S2C_DISCONNECT:
+        game->quit_requested = true;
+        break;
+
+      default:
+        break;
+      }
+    }
+  }
+}
+
 static void game_draw_target_block_highlight(Game *game, const Camera3D *camera) {
-  if (game == NULL || camera == NULL || !game->cursor_locked || game->show_debug_menu) {
+  if (game == NULL || camera == NULL || !game->cursor_locked || game->show_debug_menu ||
+      game_is_paused(game)) {
     return;
   }
 
@@ -108,49 +248,6 @@ static void game_draw_target_block_highlight(Game *game, const Camera3D *camera)
                                 PLAYER_REACH_DISTANCE, &hit) &&
       hit.hit) {
     SelectionHighlight_Draw(&hit);
-  }
-}
-
-static void handle_block_interaction(Game *game, bool left_click_pressed,
-                                     bool right_click_pressed) {
-  Vector3 eye = Player_GetEyePosition(&game->player);
-  Vector3 dir = Player_GetLookDirection(&game->player);
-
-  VoxelRaycastHit hit;
-
-  if (left_click_pressed) {
-    if (Raycast_VoxelForPlacement(&game->world, eye, dir, PLAYER_REACH_DISTANCE, &hit) && hit.hit) {
-      if (hit.block_id != BLOCK_BEDROCK) {
-        World_SetBlock(&game->world, hit.block_x, hit.block_y, hit.block_z, BLOCK_AIR);
-      }
-    }
-  }
-
-  if (right_click_pressed) {
-    if (Raycast_VoxelForPlacement(&game->world, eye, dir, PLAYER_REACH_DISTANCE, &hit) && hit.hit) {
-      int px = hit.block_x;
-      int py = hit.block_y;
-      int pz = hit.block_z;
-
-      if (!Block_IsReplaceable(hit.block_id)) {
-        px += hit.normal_x;
-        py += hit.normal_y;
-        pz += hit.normal_z;
-      }
-
-      if (py >= 0 && py < WORLD_MAX_HEIGHT &&
-          Block_IsReplaceable(World_GetBlock(&game->world, px, py, pz))) {
-        BoundingBox block_box = {
-            .min = {(float)px, (float)py, (float)pz},
-            .max = {(float)px + 1.0f, (float)py + 1.0f, (float)pz + 1.0f},
-        };
-
-        BoundingBox player_box = Player_GetBoundsAt(&game->player, game->player.position);
-        if (!CheckCollisionBoxes(player_box, block_box)) {
-          World_SetBlock(&game->world, px, py, pz, game->player.selected_block);
-        }
-      }
-    }
   }
 }
 
@@ -165,7 +262,9 @@ static void game_draw_world_pass(void *ctx, const Camera3D *camera) {
     return;
   }
 
-  Clouds_Draw(&pass->game->clouds, camera, pass->ambient);
+  if (pass->game->clouds_enabled) {
+    Clouds_Draw(&pass->game->clouds, camera, pass->ambient);
+  }
   World_Draw(&pass->game->world, camera, pass->ambient);
   game_draw_target_block_highlight(pass->game, camera);
 }
@@ -222,16 +321,29 @@ static void game_draw_debug_ui_pass(void *ctx) {
   game_draw_debug_ui(game);
 }
 
-bool Game_Init(Game *game, int64_t seed, int render_distance) {
+bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connect_host,
+               uint16_t connect_port) {
+  NetEndpoint *server_endpoint = NULL;
+
   if (!game) {
     return false;
   }
 
   *game = (Game){0};
   game->seed = seed;
+  game->network_tick_rate = (int)GAME_TICK_RATE;
+  game->network_tick_counter = 1;
+  game->network_sequence = 1;
+  game->remote_mode = (connect_host != NULL && connect_host[0] != '\0');
   game->cursor_locked = true;
   game->pending_lock_request = true;
   game->lock_before_debug_menu = true;
+
+  game->show_escape_menu = false;
+  game->show_options = false;
+  game->clouds_enabled = true;
+  game->quit_requested = false;
+  game->lock_before_escape_menu = true;
 
   game->show_debug_menu = false;
   game->show_profiler_stats = false;
@@ -255,11 +367,13 @@ bool Game_Init(Game *game, int64_t seed, int render_distance) {
 
   if (!Renderer_Init(&game->renderer)) {
     Game_Shutdown(game);
+    return false;
   }
   game->renderer_initialized = true;
 
   if (!UI_Init(&game->ui, UI_DEFAULT_MAX_NODES, UI_DEFAULT_TEXT_CAPACITY, UI_DEFAULT_MAX_STATES)) {
     Game_Shutdown(game);
+    return false;
   }
   UI_SetReferenceResolution(&game->ui, 1280.0f, 720.0f);
   game->ui_initialized = true;
@@ -267,17 +381,57 @@ bool Game_Init(Game *game, int64_t seed, int render_distance) {
   game->terrain_texture = LoadTexture("assets/atlas.png");
   if (game->terrain_texture.id == 0) {
     Game_Shutdown(game);
+    return false;
   }
 
   game->font = LoadFontEx("assets/fonts/default.ttf", 20, NULL, 0);
   if (game->font.texture.id == 0) {
     Game_Shutdown(game);
+    return false;
   }
   SetTextureFilter(game->font.texture, TEXTURE_FILTER_POINT);
-
   SetTextureFilter(game->terrain_texture, TEXTURE_FILTER_POINT);
 
-  World_Init(&game->world, seed, render_distance, game->terrain_texture);
+  if (game->remote_mode) {
+    uint16_t port = (connect_port == 0) ? 25565u : connect_port;
+    game->net = Net_Connect(connect_host, port);
+    game->owns_net = true;
+    if (game->net == NULL) {
+      Game_Shutdown(game);
+      return false;
+    }
+    game->net_initialized = true;
+  } else {
+    ServerConfig server_config = {
+        .seed = seed,
+        .render_distance = render_distance,
+        .tick_rate = (int)GAME_TICK_RATE,
+        .max_clients = 1,
+        .port = 0,
+        .mode = SERVER_MODE_INTERNAL,
+    };
+    strncpy(server_config.bind, "*", sizeof(server_config.bind) - 1);
+
+    if (!Net_CreateLocalPair(&game->net, &server_endpoint)) {
+      Game_Shutdown(game);
+      return false;
+    }
+    game->net_initialized = true;
+    game->owns_net = true;
+
+    if (!ServerCore_Init(&game->internal_server, &server_config, server_endpoint, true)) {
+      Game_Shutdown(game);
+      return false;
+    }
+    game->internal_server_initialized = true;
+
+    if (!ServerCore_StartThread(&game->internal_server)) {
+      Game_Shutdown(game);
+      return false;
+    }
+  }
+
+  World_InitReplicated(&game->world, render_distance, game->terrain_texture);
   game->world_initialized = true;
 
   int spawn_y = World_GetTopY(&game->world, 0, 0);
@@ -309,13 +463,27 @@ bool Game_Init(Game *game, int64_t seed, int render_distance) {
   };
   Clouds_Init(&game->clouds);
   return true;
-
-  Game_Shutdown(game);
 }
 
 void Game_Shutdown(Game *game) {
   if (!game) {
-    exit(1);
+    return;
+  }
+
+  if (game->internal_server_initialized) {
+    ServerCore_Stop(&game->internal_server);
+    ServerCore_Shutdown(&game->internal_server);
+    game->internal_server_initialized = false;
+  }
+
+  if (game->net_initialized && game->net != NULL) {
+    Net_Close(game->net);
+    if (game->owns_net) {
+      Net_Destroy(game->net);
+    }
+    game->net = NULL;
+    game->net_initialized = false;
+    game->owns_net = false;
   }
 
   if (game->world_initialized) {
@@ -364,11 +532,15 @@ void Game_Shutdown(Game *game) {
     rligShutdown();
     game->imgui_initialized = false;
   }
-  exit(0);
 }
 
 void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
-  if (!input) {
+  if (game == NULL || input == NULL) {
+    return;
+  }
+
+  if (game->quit_requested) {
+    CloseWindow();
     return;
   }
 
@@ -389,32 +561,36 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
   if (input->escape_pressed) {
     if (game->show_debug_menu) {
       close_debug_menu(game);
-    } else if (game->cursor_locked || game->pending_lock_request) {
-      game->pending_lock_request = false;
-      set_cursor_locked(game, false);
+    } else if (game->show_options) {
+      game->show_options = false;
+      game->show_escape_menu = true;
+    } else if (game->show_escape_menu) {
+      close_escape_menu(game);
     } else {
-      game->pending_lock_request = true;
-      set_cursor_locked(game, true);
+      open_escape_menu(game);
     }
   }
 
-  if (!game->show_debug_menu && !game->cursor_locked && left_click_pressed) {
+  if (!game->show_debug_menu && !game_is_paused(game) && !game->cursor_locked &&
+      left_click_pressed) {
     game->pending_lock_request = true;
     set_cursor_locked(game, true);
     consumed_relock_click = true;
   }
 
-  if (!game->show_debug_menu && game->cursor_locked && !IsWindowFocused()) {
+  if (!game->show_debug_menu && !game_is_paused(game) && game->cursor_locked &&
+      !IsWindowFocused()) {
     game->pending_lock_request = true;
   }
 
-  bool click_retrying_lock = !game->show_debug_menu && game->pending_lock_request &&
+  bool click_retrying_lock = !game->show_debug_menu && !game_is_paused(game) &&
+                             game->pending_lock_request &&
                              (left_click_pressed || right_click_pressed);
   if (click_retrying_lock) {
     consumed_relock_click = true;
   }
 
-  if (game->pending_lock_request && !game->show_debug_menu) {
+  if (game->pending_lock_request && !game->show_debug_menu && !game_is_paused(game)) {
     if (IsWindowFocused() || click_retrying_lock) {
       set_cursor_locked(game, true);
     }
@@ -424,19 +600,18 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
     }
   }
 
-  float hotbar_scroll =
-      (!game->show_debug_menu && game->cursor_locked) ? input->mouse_wheel_delta : 0.0f;
+  float hotbar_scroll = (!game->show_debug_menu && !game_is_paused(game) && game->cursor_locked)
+                            ? input->mouse_wheel_delta
+                            : 0.0f;
   Player_ApplyHotbarScroll(&game->player, hotbar_scroll);
 
-  Profiler_BeginSection("Player");
-  Player_Update(&game->player, &game->world, input, tick_dt, game->cursor_locked);
+  Profiler_BeginSection("Network");
+  game_process_network(game);
+  bool gameplay_enabled =
+      (!game->show_debug_menu && !game_is_paused(game) && game->cursor_locked && !consumed_relock_click);
+  game_send_input(game, input, gameplay_enabled);
+  game->network_tick_counter++;
   Profiler_EndSection();
-
-  if (game->cursor_locked && !consumed_relock_click) {
-    Profiler_BeginSection("BlockInteraction");
-    handle_block_interaction(game, left_click_pressed, right_click_pressed);
-    Profiler_EndSection();
-  }
 
   Profiler_BeginSection("World");
   World_Update(&game->world, game->player.position, tick_dt);
@@ -483,10 +658,109 @@ void Game_DrawHUD(Game *game) {
   UI_BeginFrame(&game->ui, game->font, 20.0f);
   HUD_BuildInfoPanel(&game->ui, &game->player, &game->world);
   HUD_BuildHotbar(&game->ui, game->terrain_texture, &game->player);
-
   UI_EndFrame(&game->ui);
 
-  if (game->cursor_locked) {
+  if (game_is_paused(game)) {
+    int sw = GetScreenWidth();
+    int sh = GetScreenHeight();
+    float scale = (float)sw / 1280.0f;
+    if (scale < 1.0f)
+      scale = 1.0f;
+
+    float panel_w = 240.0f * scale;
+    float panel_h = game->show_options ? 220.0f * scale : 180.0f * scale;
+    float panel_x = (sw - panel_w) * 0.5f;
+    float panel_y = (sh - panel_h) * 0.5f;
+
+    DrawRectangle((int)panel_x, (int)panel_y, (int)panel_w, (int)panel_h, (Color){40, 40, 40, 230});
+
+    float font_title = 22.0f * scale;
+    float font_btn = 18.0f * scale;
+    float btn_w = 200.0f * scale;
+    float btn_h = 32.0f * scale;
+    float btn_x = panel_x + (panel_w - btn_w) * 0.5f;
+    float cursor_y = panel_y + 20.0f * scale;
+
+    if (game->show_options) {
+      DrawTextEx(
+          game->font, "Options",
+          (Vector2){panel_x +
+                        (panel_w - MeasureTextEx(game->font, "Options", font_title, 1.0f).x) * 0.5f,
+                    cursor_y},
+          font_title, 1.0f, WHITE);
+      cursor_y += font_title + 16.0f * scale;
+
+      float cb_size = 18.0f * scale;
+      Rectangle cb_rect = {btn_x, cursor_y, cb_size, cb_size};
+      if (game->clouds_enabled) {
+        DrawRectangleRec(cb_rect, (Color){80, 200, 80, 255});
+      } else {
+        DrawRectangleRec(cb_rect, (Color){180, 180, 180, 255});
+      }
+      DrawRectangleLinesEx(cb_rect, 2.0f * scale, WHITE);
+      DrawTextEx(game->font, "Clouds",
+                 (Vector2){btn_x + cb_size + 10.0f * scale, cursor_y + (cb_size - font_btn) * 0.5f},
+                 font_btn, 1.0f, WHITE);
+
+      if (CheckCollisionPointRec(GetMousePosition(), cb_rect) &&
+          IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+        game->clouds_enabled = !game->clouds_enabled;
+      }
+      cursor_y += cb_size + 20.0f * scale;
+
+      Rectangle back_rect = {btn_x, cursor_y, btn_w, btn_h};
+      DrawRectangleRec(back_rect, (Color){70, 70, 70, 220});
+      Vector2 bt = MeasureTextEx(game->font, "Back", font_btn, 1.0f);
+      DrawTextEx(
+          game->font, "Back",
+          (Vector2){back_rect.x + (btn_w - bt.x) * 0.5f, back_rect.y + (btn_h - bt.y) * 0.5f},
+          font_btn, 1.0f, WHITE);
+
+      if (CheckCollisionPointRec(GetMousePosition(), back_rect) &&
+          IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+        game->show_options = false;
+        game->show_escape_menu = true;
+      }
+    } else {
+      DrawTextEx(
+          game->font, "Game Paused",
+          (Vector2){panel_x +
+                        (panel_w - MeasureTextEx(game->font, "Game Paused", font_title, 1.0f).x) *
+                            0.5f,
+                    cursor_y},
+          font_title, 1.0f, WHITE);
+      cursor_y += font_title + 20.0f * scale;
+
+      Rectangle opt_rect = {btn_x, cursor_y, btn_w, btn_h};
+      DrawRectangleRec(opt_rect, (Color){70, 70, 70, 220});
+      Vector2 ot = MeasureTextEx(game->font, "Options", font_btn, 1.0f);
+      DrawTextEx(game->font, "Options",
+                 (Vector2){opt_rect.x + (btn_w - ot.x) * 0.5f, opt_rect.y + (btn_h - ot.y) * 0.5f},
+                 font_btn, 1.0f, WHITE);
+
+      if (CheckCollisionPointRec(GetMousePosition(), opt_rect) &&
+          IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+        game->show_escape_menu = false;
+        game->show_options = true;
+      }
+      cursor_y += btn_h + 8.0f * scale;
+
+      Rectangle quit_rect = {btn_x, cursor_y, btn_w, btn_h};
+      DrawRectangleRec(quit_rect, (Color){70, 70, 70, 220});
+      Vector2 qt = MeasureTextEx(game->font, "Quit", font_btn, 1.0f);
+      DrawTextEx(
+          game->font, "Quit",
+          (Vector2){quit_rect.x + (btn_w - qt.x) * 0.5f, quit_rect.y + (btn_h - qt.y) * 0.5f},
+          font_btn, 1.0f, WHITE);
+
+      if (CheckCollisionPointRec(GetMousePosition(), quit_rect) &&
+          IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+        game->quit_requested = true;
+      }
+    }
+  }
+
+  if (game->cursor_locked && !game_is_paused(game)) {
     int cx = GetScreenWidth() / 2;
     int cy = GetScreenHeight() / 2;
 

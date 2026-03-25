@@ -4,6 +4,8 @@
 #include "raylib.h"
 #include <stdbool.h>
 
+#include "net/protocol.h"
+
 typedef struct GameInputSnapshot {
   bool move_forward;
   bool move_backward;
@@ -24,5 +26,8 @@ typedef struct GameInputSnapshot {
 void Game_CaptureFrameInput(GameInputSnapshot *input);
 void Game_MergeFrameInput(GameInputSnapshot *pending, const GameInputSnapshot *frame);
 void Game_ClearTickEdgeInput(GameInputSnapshot *input);
+void Game_BuildGameplayInputCmd(const GameInputSnapshot *input, uint32_t tick_id,
+                                uint8_t selected_block, bool gameplay_enabled,
+                                GameplayInputCmd *out_cmd);
 
 #endif

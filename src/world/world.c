@@ -146,17 +146,23 @@ Chunk *World_GetOrCreateChunk(World *world, int cx, int cz) {
     return NULL;
 
   Chunk_Init(chunk, cx, cz);
-  WorldGen_GenerateChunk(&world->generator, chunk);
-  Lighting_InitializeChunkSkylight(world, chunk);
+  if (world->authoritative_mode) {
+    WorldGen_GenerateChunk(&world->generator, chunk);
+    Lighting_InitializeChunkSkylight(world, chunk);
+  } else {
+    chunk->generated = true;
+  }
 
   int64_t key = make_chunk_key(cx, cz);
   voxel_chunkmap_put(&world->chunks, key, chunk);
 
-  if (chunk->mesh_dirty) {
+  if (world->meshing_enabled && chunk->mesh_dirty) {
     world_enqueue_dirty_chunk_key(world, key);
   }
 
-  World_MarkNeighborsDirty(world, cx, cz);
+  if (world->meshing_enabled) {
+    World_MarkNeighborsDirty(world, cx, cz);
+  }
 
   return chunk;
 }
@@ -203,21 +209,27 @@ bool World_SetBlock(World *world, int x, int y, int z, uint8_t block_id) {
   Chunk_SetBlock(chunk, lx, y, lz, block_id);
   Chunk_RecomputeHeightColumn(chunk, lx, lz);
 
-  /* Direct block edits should always queue a remesh right away. */
-  World_MarkChunkDirty(world, cx, cz);
+  if (world->meshing_enabled) {
+    /* Direct block edits should always queue a remesh right away. */
+    World_MarkChunkDirty(world, cx, cz);
+  }
 
-  /*
-   * Relight a 3x3 neighborhood around the edit to quickly repair stale side
-   * lighting and avoid dark side-faces after local block edits.
-   */
-  world_relight_columns_around(world, x, z, 1);
+  if (world->authoritative_mode) {
+    /*
+     * Relight a 3x3 neighborhood around the edit to quickly repair stale side
+     * lighting and avoid dark side-faces after local block edits.
+     */
+    world_relight_columns_around(world, x, z, 1);
+  }
 
-  if (lx == 0 || lx == 15 || lz == 0 || lz == 15) {
+  if (world->meshing_enabled && (lx == 0 || lx == 15 || lz == 0 || lz == 15)) {
     World_MarkNeighborsDirty(world, cx, cz);
   }
 
-  Lighting_QueueAround(world, x, y, z);
-  Lighting_Process(world, WORLD_LIGHT_NODES_ON_BLOCK_EDIT);
+  if (world->authoritative_mode) {
+    Lighting_QueueAround(world, x, y, z);
+    Lighting_Process(world, WORLD_LIGHT_NODES_ON_BLOCK_EDIT);
+  }
   return true;
 }
 
@@ -272,14 +284,18 @@ void World_SetSkyLight(World *world, int x, int y, int z, int value) {
   int lx = floor_mod16(x);
   int lz = floor_mod16(z);
   Chunk_SetSkyLight(chunk, lx, y, lz, value);
-  World_MarkChunkDirty(world, cx, cz);
+  if (world->meshing_enabled) {
+    World_MarkChunkDirty(world, cx, cz);
+  }
 }
 
 void World_MarkChunkDirty(World *world, int cx, int cz) {
   Chunk *chunk = World_GetChunk(world, cx, cz);
   if (chunk != NULL) {
-    chunk->mesh_dirty = true;
-    world_enqueue_dirty_chunk(world, cx, cz);
+    if (world->meshing_enabled) {
+      chunk->mesh_dirty = true;
+      world_enqueue_dirty_chunk(world, cx, cz);
+    }
   }
 }
 
@@ -506,7 +522,9 @@ static void unload_far_chunks(World *world, int center_cx, int center_cz) {
   arrfree(keys_to_remove);
 }
 
-void World_Init(World *world, int64_t seed, int render_distance, Texture2D terrain_texture) {
+static void world_init_internal(World *world, int64_t seed, int render_distance,
+                                Texture2D terrain_texture, bool authoritative_mode,
+                                bool meshing_enabled, bool warmup) {
   memset(world, 0, sizeof(*world));
 
   if (render_distance < 2) {
@@ -520,17 +538,23 @@ void World_Init(World *world, int64_t seed, int render_distance, Texture2D terra
   world->render_distance = render_distance;
   world->terrain_texture = terrain_texture;
   world->world_time = 6000.0f;
+  world->authoritative_mode = authoritative_mode;
+  world->meshing_enabled = meshing_enabled;
 
   world->chunks = voxel_chunkmap_create();
 
   Blocks_Init();
-  WorldGen_Init(&world->generator, seed);
+  if (authoritative_mode) {
+    WorldGen_Init(&world->generator, seed);
+  }
 
-  LightUpdateQueue *queue = (LightUpdateQueue *)malloc(sizeof(LightUpdateQueue));
-  if (queue != NULL) {
-    LightQueue_Init(queue,
-                    WORLD_LIGHT_QUEUE_OVERLOAD_THRESHOLD + WORLD_LIGHT_QUEUE_CAPACITY_HEADROOM);
-    world->light_queue_ptr = queue;
+  if (authoritative_mode) {
+    LightUpdateQueue *queue = (LightUpdateQueue *)malloc(sizeof(LightUpdateQueue));
+    if (queue != NULL) {
+      LightQueue_Init(queue,
+                      WORLD_LIGHT_QUEUE_OVERLOAD_THRESHOLD + WORLD_LIGHT_QUEUE_CAPACITY_HEADROOM);
+      world->light_queue_ptr = queue;
+    }
   }
 
   const float offset = 0.05f;
@@ -539,21 +563,35 @@ void World_Init(World *world, int64_t seed, int render_distance, Texture2D terra
     world->light_lut[i] = (1.0f - factor) / (factor * 3.0f + 1.0f) * (1.0f - offset) + offset;
   }
 
-  for (int cz = -1; cz <= 1; cz++) {
-    for (int cx = -1; cx <= 1; cx++) {
-      World_GetOrCreateChunk(world, cx, cz);
+  if (authoritative_mode && warmup) {
+    for (int cz = -1; cz <= 1; cz++) {
+      for (int cx = -1; cx <= 1; cx++) {
+        World_GetOrCreateChunk(world, cx, cz);
+      }
     }
-  }
 
-  for (int i = 0; i < 12; i++) {
-    Lighting_Process(world, world_lighting_budget(world));
-    const LightUpdateQueue *q = world_queue_const(world);
-    if (q == NULL || q->count == 0) {
-      break;
+    for (int i = 0; i < 12; i++) {
+      Lighting_Process(world, world_lighting_budget(world));
+      const LightUpdateQueue *q = world_queue_const(world);
+      if (q == NULL || q->count == 0) {
+        break;
+      }
     }
   }
 
   update_ambient_darkness(world);
+}
+
+void World_Init(World *world, int64_t seed, int render_distance, Texture2D terrain_texture) {
+  world_init_internal(world, seed, render_distance, terrain_texture, true, true, true);
+}
+
+void World_InitServer(World *world, int64_t seed, int render_distance) {
+  world_init_internal(world, seed, render_distance, (Texture2D){0}, true, false, true);
+}
+
+void World_InitReplicated(World *world, int render_distance, Texture2D terrain_texture) {
+  world_init_internal(world, 0, render_distance, terrain_texture, false, true, false);
 }
 
 void World_Shutdown(World *world) {
@@ -570,12 +608,13 @@ void World_Shutdown(World *world) {
   arrfree(world->dirty_chunk_keys);
   world->dirty_chunk_read_index = 0;
   hmfree(world->dirty_chunk_key_set);
-  arrfree(g_solid_draw_entries);
-  arrfree(g_translucent_draw_entries);
-  arrfree(g_cutout_draw_entries);
-  arrfree(g_translucent_solid_draw_entries);
-
-  Mesher_Shutdown();
+  if (world->meshing_enabled) {
+    arrfree(g_solid_draw_entries);
+    arrfree(g_translucent_draw_entries);
+    arrfree(g_cutout_draw_entries);
+    arrfree(g_translucent_solid_draw_entries);
+    Mesher_Shutdown();
+  }
 
   if (world->light_queue_ptr != NULL) {
     LightUpdateQueue *queue = world_queue(world);
@@ -584,54 +623,62 @@ void World_Shutdown(World *world) {
     world->light_queue_ptr = NULL;
   }
 
-  WorldGen_Shutdown(&world->generator);
+  if (world->authoritative_mode) {
+    WorldGen_Shutdown(&world->generator);
+  }
 }
 
 void World_Update(World *world, Vector3 player_pos, float dt) {
   Profiler_BeginSection("WorldUpdate");
 
-  world->world_time += dt * 20.0f;
-  update_ambient_darkness(world);
+  if (world->authoritative_mode) {
+    world->world_time += dt * 20.0f;
+    update_ambient_darkness(world);
 
-  int player_cx = floor_div16((int)floorf(player_pos.x));
-  int player_cz = floor_div16((int)floorf(player_pos.z));
+    int player_cx = floor_div16((int)floorf(player_pos.x));
+    int player_cz = floor_div16((int)floorf(player_pos.z));
 
-  Profiler_BeginSection("ChunkLoading");
-  unload_far_chunks(world, player_cx, player_cz);
+    Profiler_BeginSection("ChunkLoading");
+    unload_far_chunks(world, player_cx, player_cz);
 
-  int chunk_generation_budget = world_chunk_generation_budget(world);
-  for (int i = 0; i < chunk_generation_budget; i++) {
-    if (!generate_next_chunk(world, player_cx, player_cz)) {
-      break;
+    int chunk_generation_budget = world_chunk_generation_budget(world);
+    for (int i = 0; i < chunk_generation_budget; i++) {
+      if (!generate_next_chunk(world, player_cx, player_cz)) {
+        break;
+      }
     }
+    Profiler_EndSection();
+
+    Profiler_BeginSection("Lighting");
+    Lighting_Process(world, world_lighting_budget(world));
+    Profiler_EndSection();
+  } else {
+    update_ambient_darkness(world);
   }
-  Profiler_EndSection();
 
-  Profiler_BeginSection("Lighting");
-  Lighting_Process(world, world_lighting_budget(world));
-  Profiler_EndSection();
-
-  Profiler_BeginSection("ChunkMeshing");
-  int rebuild_budget = 4;
-  int rebuilt = 0;
-  while (rebuild_budget > 0 && world->dirty_chunk_read_index < arrlen(world->dirty_chunk_keys)) {
-    int64_t key = world->dirty_chunk_keys[world->dirty_chunk_read_index++];
-    hmdel(world->dirty_chunk_key_set, key);
-    Chunk *chunk = voxel_chunkmap_get(world->chunks, key);
-    if (chunk && chunk->mesh_dirty) {
-      WORLD_LOG("Rebuilding chunk (%d, %d)", chunk->cx, chunk->cz);
-      Mesher_RebuildChunk(world, chunk, 1.0f);
-      chunk->mesh_dirty = false;
-      rebuild_budget--;
-      rebuilt++;
+  if (world->meshing_enabled) {
+    Profiler_BeginSection("ChunkMeshing");
+    int rebuild_budget = 4;
+    int rebuilt = 0;
+    while (rebuild_budget > 0 && world->dirty_chunk_read_index < arrlen(world->dirty_chunk_keys)) {
+      int64_t key = world->dirty_chunk_keys[world->dirty_chunk_read_index++];
+      hmdel(world->dirty_chunk_key_set, key);
+      Chunk *chunk = voxel_chunkmap_get(world->chunks, key);
+      if (chunk && chunk->mesh_dirty) {
+        WORLD_LOG("Rebuilding chunk (%d, %d)", chunk->cx, chunk->cz);
+        Mesher_RebuildChunk(world, chunk, 1.0f);
+        chunk->mesh_dirty = false;
+        rebuild_budget--;
+        rebuilt++;
+      }
     }
-  }
-  world_compact_dirty_chunk_queue(world);
+    world_compact_dirty_chunk_queue(world);
 
-  if (rebuilt > 0) {
-    WORLD_LOG("Total rebuilt: %d chunks", rebuilt);
+    if (rebuilt > 0) {
+      WORLD_LOG("Total rebuilt: %d chunks", rebuilt);
+    }
+    Profiler_EndSection();
   }
-  Profiler_EndSection();
 
   Profiler_EndSection(); // WorldUpdate
 }
@@ -763,6 +810,10 @@ static void draw_water_pass(ChunkSortEntry *entries, ptrdiff_t count, Color tint
 }
 
 void World_Draw(World *world, const Camera3D *camera, float ambient_multiplier) {
+  if (world == NULL || camera == NULL || !world->meshing_enabled) {
+    return;
+  }
+
   int cam_cx = floor_div16((int)floorf(camera->position.x));
   int cam_cz = floor_div16((int)floorf(camera->position.z));
   int rd = world->render_distance + 1;
@@ -790,4 +841,105 @@ void World_Draw(World *world, const Camera3D *camera, float ambient_multiplier) 
   draw_translucent_solid_pass(g_translucent_solid_draw_entries, tsolid_count,
                               translucent_solid_tint);
   draw_water_pass(g_translucent_draw_entries, water_count, water_tint);
+}
+
+bool World_ApplyChunkData(World *world, int cx, int cz, const uint8_t *blocks, size_t blocks_size,
+                          const uint8_t *skylight, size_t skylight_size, const uint8_t *heightmap,
+                          size_t heightmap_size) {
+  Chunk *chunk;
+  int64_t key;
+
+  if (world == NULL || blocks == NULL || skylight == NULL || heightmap == NULL) {
+    return false;
+  }
+
+  if (blocks_size != WORLD_CHUNK_VOLUME || skylight_size != WORLD_CHUNK_LIGHT_BYTES ||
+      heightmap_size != (WORLD_CHUNK_SIZE_X * WORLD_CHUNK_SIZE_Z)) {
+    return false;
+  }
+
+  chunk = World_GetChunk(world, cx, cz);
+  if (chunk == NULL) {
+    chunk = (Chunk *)calloc(1, sizeof(Chunk));
+    if (chunk == NULL) {
+      return false;
+    }
+    Chunk_Init(chunk, cx, cz);
+    key = make_chunk_key(cx, cz);
+    voxel_chunkmap_put(&world->chunks, key, chunk);
+  }
+
+  memcpy(chunk->blocks, blocks, blocks_size);
+  memcpy(chunk->skylight, skylight, skylight_size);
+  memcpy(chunk->heightmap, heightmap, heightmap_size);
+  chunk->generated = true;
+  chunk->lighting_dirty = false;
+  chunk->mesh_dirty = world->meshing_enabled;
+
+  if (world->meshing_enabled) {
+    World_MarkChunkDirty(world, cx, cz);
+    World_MarkNeighborsDirty(world, cx, cz);
+  }
+
+  return true;
+}
+
+bool World_ApplyBlockDelta(World *world, int x, int y, int z, uint8_t block_id, uint8_t skylight) {
+  int cx, cz, lx, lz;
+  Chunk *chunk;
+
+  if (world == NULL || y < 0 || y >= WORLD_MAX_HEIGHT) {
+    return false;
+  }
+
+  cx = floor_div16(x);
+  cz = floor_div16(z);
+  lx = floor_mod16(x);
+  lz = floor_mod16(z);
+  chunk = World_GetChunk(world, cx, cz);
+  if (chunk == NULL) {
+    return false;
+  }
+
+  Chunk_SetBlock(chunk, lx, y, lz, block_id);
+  Chunk_SetSkyLight(chunk, lx, y, lz, skylight);
+  Chunk_RecomputeHeightColumn(chunk, lx, lz);
+
+  if (world->meshing_enabled) {
+    World_MarkChunkDirty(world, cx, cz);
+    if (lx == 0 || lx == 15 || lz == 0 || lz == 15) {
+      World_MarkNeighborsDirty(world, cx, cz);
+    }
+  }
+
+  return true;
+}
+
+bool World_RemoveChunk(World *world, int cx, int cz) {
+  int64_t key;
+  Chunk *chunk;
+
+  if (world == NULL) {
+    return false;
+  }
+
+  key = make_chunk_key(cx, cz);
+  chunk = voxel_chunkmap_get(world->chunks, key);
+  if (chunk == NULL) {
+    return false;
+  }
+
+  Chunk_Shutdown(chunk);
+  free(chunk);
+  voxel_chunkmap_remove(&world->chunks, key);
+  hmdel(world->dirty_chunk_key_set, key);
+  return true;
+}
+
+void World_SetTime(World *world, float world_time) {
+  if (world == NULL) {
+    return;
+  }
+  world->world_time = world_time;
+  update_ambient_darkness(world);
 }

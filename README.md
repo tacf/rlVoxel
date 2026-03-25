@@ -130,6 +130,10 @@ Check [docs/SYSTEMS.md](docs/SYSTEMS.md)
 
 Check [docs/UI.md](docs/UI.md)
 
+## Networking Documentation
+
+Check [docs/NETWORKING.md](docs/NETWORKING.md)
+
 ## TODO / Wishlist / Contribution Suggestions
 
 Some features that i already have in mind were purposedly left out for the following reasons
