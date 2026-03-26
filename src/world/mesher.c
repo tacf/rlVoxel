@@ -20,6 +20,25 @@ static bool opaque_ao_shader_loaded = false;
 
 static Shader translucent_shader = {0};
 static bool translucent_shader_loaded = false;
+static bool geometry_pixel_snap_enabled = false;
+static Vector2 geometry_pixel_snap_resolution = {480.0f, 270.0f};
+
+static void mesher_apply_geometry_snap_uniforms(Shader shader) {
+  if (shader.id == 0) {
+    return;
+  }
+
+  float enabled = geometry_pixel_snap_enabled ? 1.0f : 0.0f;
+  int enabled_loc = GetShaderLocation(shader, "uGeometrySnapEnabled");
+  int resolution_loc = GetShaderLocation(shader, "uGeometrySnapResolution");
+
+  if (enabled_loc >= 0) {
+    SetShaderValue(shader, enabled_loc, &enabled, SHADER_UNIFORM_FLOAT);
+  }
+  if (resolution_loc >= 0) {
+    SetShaderValue(shader, resolution_loc, &geometry_pixel_snap_resolution, SHADER_UNIFORM_VEC2);
+  }
+}
 
 static int floor_div16(int x) {
   if (x >= 0) {
@@ -35,6 +54,7 @@ static Shader get_cutout_shader(void) {
     ShaderPaths_Resolve(vs_path, sizeof(vs_path), "cutout.vs");
     ShaderPaths_Resolve(fs_path, sizeof(fs_path), "cutout.fs");
     cutout_shader = LoadShader(vs_path, fs_path);
+    mesher_apply_geometry_snap_uniforms(cutout_shader);
     cutout_shader_loaded = true;
   }
   return cutout_shader;
@@ -59,6 +79,7 @@ static Shader get_opaque_ao_shader(void) {
     if (locCurve >= 0)
       SetShaderValue(opaque_ao_shader, locCurve, &aoCurve, SHADER_UNIFORM_FLOAT);
 
+    mesher_apply_geometry_snap_uniforms(opaque_ao_shader);
     opaque_ao_shader_loaded = true;
   }
 
@@ -72,9 +93,39 @@ static Shader get_translucent_shader(void) {
     ShaderPaths_Resolve(vs_path, sizeof(vs_path), "translucent.vs");
     ShaderPaths_Resolve(fs_path, sizeof(fs_path), "translucent.fs");
     translucent_shader = LoadShader(vs_path, fs_path);
+    mesher_apply_geometry_snap_uniforms(translucent_shader);
     translucent_shader_loaded = true;
   }
   return translucent_shader;
+}
+
+void Mesher_SetGeometryPixelSnapEnabled(bool enabled) {
+  geometry_pixel_snap_enabled = enabled;
+  if (cutout_shader_loaded) {
+    mesher_apply_geometry_snap_uniforms(cutout_shader);
+  }
+  if (opaque_ao_shader_loaded) {
+    mesher_apply_geometry_snap_uniforms(opaque_ao_shader);
+  }
+  if (translucent_shader_loaded) {
+    mesher_apply_geometry_snap_uniforms(translucent_shader);
+  }
+}
+
+void Mesher_SetGeometryPixelSnapResolution(float width, float height) {
+  if (width < 1.0f || height < 1.0f) {
+    return;
+  }
+  geometry_pixel_snap_resolution = (Vector2){width, height};
+  if (cutout_shader_loaded) {
+    mesher_apply_geometry_snap_uniforms(cutout_shader);
+  }
+  if (opaque_ao_shader_loaded) {
+    mesher_apply_geometry_snap_uniforms(opaque_ao_shader);
+  }
+  if (translucent_shader_loaded) {
+    mesher_apply_geometry_snap_uniforms(translucent_shader);
+  }
 }
 
 /* Callback implementations for libvoxel mesher */

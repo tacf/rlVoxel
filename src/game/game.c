@@ -24,6 +24,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 #include "world/blocks.h"
+#include "world/mesher.h"
 #include "world/world.h"
 #include "profiling/profiler.h"
 #include "profiling/profiler_renderer.h"
@@ -1127,6 +1128,7 @@ bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connec
   game->show_escape_menu = false;
   game->show_options = false;
   game->clouds_enabled = true;
+  game->pixel_look_enabled = false;
   game->quit_requested = false;
   game->lock_before_escape_menu = true;
 
@@ -1158,6 +1160,8 @@ bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connec
     return false;
   }
   game->renderer_initialized = true;
+  Renderer_SetPixelateEnabled(&game->renderer, game->pixel_look_enabled);
+  Mesher_SetGeometryPixelSnapEnabled(game->pixel_look_enabled);
 
   if (!UI_Init(&game->ui, UI_DEFAULT_MAX_NODES, UI_DEFAULT_TEXT_CAPACITY, UI_DEFAULT_MAX_STATES)) {
     Game_Shutdown(game);
@@ -1515,6 +1519,14 @@ void Game_ApplyFrameLook(Game *game, GameInputSnapshot *frame_input) {
 void Game_Draw(Game *game, float alpha) {
   Profiler_BeginSection("Render");
 
+  int snap_downscale =
+      (game->pixel_look_enabled && game->renderer.pixelate_downscale > 1)
+          ? game->renderer.pixelate_downscale
+          : 1;
+  float snap_width = (float)((GetScreenWidth() + snap_downscale - 1) / snap_downscale);
+  float snap_height = (float)((GetScreenHeight() + snap_downscale - 1) / snap_downscale);
+  Mesher_SetGeometryPixelSnapResolution(snap_width, snap_height);
+
   sync_camera_interpolated(game, alpha);
 
   float ambient = World_GetAmbientMultiplier(&game->world);
@@ -1558,7 +1570,7 @@ void Game_DrawHUD(Game *game) {
       scale = 1.0f;
 
     float panel_w = 240.0f * scale;
-    float panel_h = game->show_options ? 220.0f * scale : 180.0f * scale;
+    float panel_h = game->show_options ? 268.0f * scale : 180.0f * scale;
     float panel_x = (sw - panel_w) * 0.5f;
     float panel_y = (sh - panel_h) * 0.5f;
 
@@ -1595,6 +1607,26 @@ void Game_DrawHUD(Game *game) {
       if (CheckCollisionPointRec(GetMousePosition(), cb_rect) &&
           IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
         game->clouds_enabled = !game->clouds_enabled;
+      }
+      cursor_y += cb_size + 20.0f * scale;
+
+      Rectangle pixel_cb_rect = {btn_x, cursor_y, cb_size, cb_size};
+      if (game->pixel_look_enabled) {
+        DrawRectangleRec(pixel_cb_rect, (Color){80, 200, 80, 255});
+      } else {
+        DrawRectangleRec(pixel_cb_rect, (Color){180, 180, 180, 255});
+      }
+      DrawRectangleLinesEx(pixel_cb_rect, 2.0f * scale, WHITE);
+      DrawTextEx(game->font, "Pixel Look",
+                 (Vector2){btn_x + cb_size + 10.0f * scale,
+                           cursor_y + (cb_size - font_btn) * 0.5f},
+                 font_btn, 1.0f, WHITE);
+
+      if (CheckCollisionPointRec(GetMousePosition(), pixel_cb_rect) &&
+          IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+        game->pixel_look_enabled = !game->pixel_look_enabled;
+        Renderer_SetPixelateEnabled(&game->renderer, game->pixel_look_enabled);
+        Mesher_SetGeometryPixelSnapEnabled(game->pixel_look_enabled);
       }
       cursor_y += cb_size + 20.0f * scale;
 

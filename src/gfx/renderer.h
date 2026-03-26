@@ -21,10 +21,15 @@ typedef struct Renderer {
   Shader fxaa;
   int fxaa_resolution_loc;
   RenderTexture2D target;
+  bool pixelate_enabled;
+  bool fxaa_enabled;
+  int pixelate_downscale;
 } Renderer;
 
 bool Renderer_Init(Renderer *renderer);
 void Renderer_Shutdown(Renderer *renderer);
+void Renderer_SetPixelateEnabled(Renderer *renderer, bool enabled);
+bool Renderer_GetPixelateEnabled(const Renderer *renderer);
 void Renderer_DrawFrame(Renderer *renderer, const Camera3D *camera, Color clear_color,
                         const RendererFrameCallbacks *callbacks);
 

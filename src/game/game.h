@@ -107,6 +107,7 @@ typedef struct Game {
 
   // Options
   bool clouds_enabled;
+  bool pixel_look_enabled;
 
   // Debug menu state
   bool show_debug_menu;

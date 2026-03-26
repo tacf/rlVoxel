@@ -11,6 +11,10 @@ static bool renderer_create_target(Renderer *renderer, int width, int height) {
   }
 
   renderer->target = LoadRenderTexture(width, height);
+  if (renderer->target.id != 0) {
+    int filter = renderer->pixelate_enabled ? TEXTURE_FILTER_POINT : TEXTURE_FILTER_BILINEAR;
+    SetTextureFilter(renderer->target.texture, filter);
+  }
   return renderer->target.id != 0;
 }
 
@@ -31,6 +35,12 @@ static bool renderer_ensure_target_size(Renderer *renderer) {
 
   int width = GetScreenWidth();
   int height = GetScreenHeight();
+  int downscale = (renderer->pixelate_enabled && renderer->pixelate_downscale > 1)
+                      ? renderer->pixelate_downscale
+                      : 1;
+
+  width = (width + downscale - 1) / downscale;
+  height = (height + downscale - 1) / downscale;
   if (width <= 0 || height <= 0) {
     return false;
   }
@@ -68,6 +78,11 @@ bool Renderer_Init(Renderer *renderer) {
   }
 
   renderer->fxaa_resolution_loc = GetShaderLocation(renderer->fxaa, "resolution");
+
+  renderer->pixelate_enabled = false;
+  renderer->fxaa_enabled = true;
+  renderer->pixelate_downscale = 4;
+
   if (!renderer_ensure_target_size(renderer)) {
     Renderer_Shutdown(renderer);
     return false;
@@ -89,6 +104,27 @@ void Renderer_Shutdown(Renderer *renderer) {
   }
 
   *renderer = (Renderer){0};
+}
+
+void Renderer_SetPixelateEnabled(Renderer *renderer, bool enabled) {
+  if (renderer == NULL) {
+    return;
+  }
+  if (renderer->pixelate_enabled == enabled) {
+    return;
+  }
+  renderer->pixelate_enabled = enabled;
+  if (renderer->target.id != 0) {
+    UnloadRenderTexture(renderer->target);
+    renderer->target = (RenderTexture2D){0};
+  }
+}
+
+bool Renderer_GetPixelateEnabled(const Renderer *renderer) {
+  if (renderer == NULL) {
+    return false;
+  }
+  return renderer->pixelate_enabled;
 }
 
 void Renderer_DrawFrame(Renderer *renderer, const Camera3D *camera, Color clear_color,
@@ -113,14 +149,15 @@ void Renderer_DrawFrame(Renderer *renderer, const Camera3D *camera, Color clear_
   Profiler_BeginSection("PostProcess");
   BeginDrawing();
   ClearBackground(clear_color);
-  if (renderer->fxaa.id != 0) {
+  if (!renderer->pixelate_enabled && renderer->fxaa_enabled && renderer->fxaa.id != 0) {
     BeginShaderMode(renderer->fxaa);
   }
-  DrawTextureRec(renderer->target.texture,
-                 (Rectangle){0, 0, (float)renderer->target.texture.width,
+  DrawTexturePro(renderer->target.texture,
+                 (Rectangle){0.0f, 0.0f, (float)renderer->target.texture.width,
                              (float)-renderer->target.texture.height},
-                 (Vector2){0, 0}, WHITE);
-  if (renderer->fxaa.id != 0) {
+                 (Rectangle){0.0f, 0.0f, (float)GetScreenWidth(), (float)GetScreenHeight()},
+                 (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
+  if (!renderer->pixelate_enabled && renderer->fxaa_enabled && renderer->fxaa.id != 0) {
     EndShaderMode();
   }
   Profiler_EndSection();
