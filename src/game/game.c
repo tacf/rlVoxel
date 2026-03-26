@@ -53,6 +53,10 @@
 #define GAME_MOVE_POSITION_EPSILON 0.0005f
 #define GAME_MOVE_VELOCITY_EPSILON 0.0010f
 #define GAME_MOVE_ANGLE_EPSILON 0.0005f
+#define GAME_SURVIVAL_BREAK_PULSE_TICKS 5u
+#define GAME_BREAK_DAMAGE_PER_HIT 1.0f
+#define GAME_BREAK_RECOVERY_DELAY_TICKS 10u
+#define GAME_BREAK_RECOVERY_INTERVAL_TICKS 5u
 
 /* Build raylib camera vectors from a player pose (position + yaw/pitch). */
 static void set_camera_from_pose(Game *game, Vector3 position, float yaw, float pitch) {
@@ -91,6 +95,50 @@ static void sync_camera_interpolated(Game *game, float alpha) {
   yaw = game->view_initialized ? game->view_yaw : game->player.yaw;
   pitch = game->view_initialized ? game->view_pitch : game->player.pitch;
   set_camera_from_pose(game, position, yaw, pitch);
+}
+
+static void game_reset_break_visual(Game *game) {
+  if (game == NULL) {
+    return;
+  }
+  game->break_visual_active = false;
+  game->break_visual_x = 0;
+  game->break_visual_y = 0;
+  game->break_visual_z = 0;
+  game->break_visual_damage = 0.0f;
+  game->break_visual_last_tick = 0u;
+  game->break_visual_last_recover_tick = 0u;
+}
+
+static void game_decay_break_visual(Game *game) {
+  uint32_t recovery_start_tick;
+  uint32_t elapsed_recovery_ticks;
+  uint32_t recovery_steps;
+  if (game == NULL || !game->break_visual_active) {
+    return;
+  }
+
+  recovery_start_tick = game->break_visual_last_tick + GAME_BREAK_RECOVERY_DELAY_TICKS;
+  if (game->network_tick_counter < recovery_start_tick) {
+    return;
+  }
+
+  if (game->break_visual_last_recover_tick < recovery_start_tick) {
+    game->break_visual_last_recover_tick = recovery_start_tick;
+  }
+
+  if (game->network_tick_counter <
+      game->break_visual_last_recover_tick + GAME_BREAK_RECOVERY_INTERVAL_TICKS) {
+    return;
+  }
+
+  elapsed_recovery_ticks = game->network_tick_counter - game->break_visual_last_recover_tick;
+  recovery_steps = elapsed_recovery_ticks / GAME_BREAK_RECOVERY_INTERVAL_TICKS;
+  game->break_visual_damage -= (float)recovery_steps * GAME_BREAK_DAMAGE_PER_HIT;
+  game->break_visual_last_recover_tick += recovery_steps * GAME_BREAK_RECOVERY_INTERVAL_TICKS;
+  if (game->break_visual_damage <= 0.0f) {
+    game_reset_break_visual(game);
+  }
 }
 
 static void set_cursor_locked(Game *game, bool locked) {
@@ -168,8 +216,12 @@ static bool game_send_hello(Game *game, int requested_render_distance) {
   sequence = game->network_sequence++;
   sent = Net_SendHello(game->net, sequence, game->network_tick_counter, &hello);
   if (sent) {
+    size_t packet_size = Protocol_FixedPacketSize(NET_MSG_C2S_HELLO);
+    if (packet_size == 0u) {
+      packet_size = Protocol_HeaderSize();
+    }
     NetProfiler_RecordSend(NET_MSG_C2S_HELLO, sequence, game->network_tick_counter,
-                           Protocol_HeaderSize() + 4u, 0u, 0u);
+                           packet_size, 0u, 0u);
   }
 
   return sent;
@@ -187,8 +239,12 @@ static bool game_send_input(Game *game, const GameplayInputCmd *cmd) {
   sequence = game->network_sequence++;
   sent = Net_SendInputCmd(game->net, sequence, game->network_tick_counter, cmd);
   if (sent) {
+    size_t packet_size = Protocol_FixedPacketSize(NET_MSG_C2S_INPUT_CMD);
+    if (packet_size == 0u) {
+      packet_size = Protocol_HeaderSize();
+    }
     NetProfiler_RecordSend(NET_MSG_C2S_INPUT_CMD, sequence, game->network_tick_counter,
-                           Protocol_HeaderSize() + 14u, 1u, cmd->tick_id);
+                           packet_size, 1u, cmd->tick_id);
   }
 
   return sent;
@@ -206,8 +262,12 @@ static bool game_send_player_move(Game *game, const NetPlayerMove *move) {
   sequence = game->network_sequence++;
   sent = Net_SendPlayerMove(game->net, sequence, game->network_tick_counter, move);
   if (sent) {
+    size_t packet_size = Protocol_FixedPacketSize(NET_MSG_C2S_PLAYER_MOVE);
+    if (packet_size == 0u) {
+      packet_size = Protocol_HeaderSize();
+    }
     NetProfiler_RecordSend(NET_MSG_C2S_PLAYER_MOVE, sequence, game->network_tick_counter,
-                           Protocol_HeaderSize() + 37u, 1u, move->tick_id);
+                           packet_size, 1u, move->tick_id);
   }
 
   return sent;
@@ -223,7 +283,8 @@ static bool game_input_cmd_semantic_equal(const GameplayInputCmd *a, const Gamep
 
   a_action_buttons = a->buttons & (uint8_t)(GAMEPLAY_INPUT_LEFT_CLICK | GAMEPLAY_INPUT_RIGHT_CLICK);
   b_action_buttons = b->buttons & (uint8_t)(GAMEPLAY_INPUT_LEFT_CLICK | GAMEPLAY_INPUT_RIGHT_CLICK);
-  return a_action_buttons == b_action_buttons && a->selected_block == b->selected_block;
+  return a_action_buttons == b_action_buttons && a->selected_block == b->selected_block &&
+         a->gameplay_mode == b->gameplay_mode && a->fly_enabled == b->fly_enabled;
 }
 
 static bool game_should_send_input(const Game *game, const GameplayInputCmd *cmd) {
@@ -431,7 +492,12 @@ static void game_apply_simulation_cmd(Game *game, const GameplayInputCmd *cmd, f
   sim.mouse_delta = (Vector2){cmd->look_delta_x, cmd->look_delta_y};
 
   game->player.selected_block = cmd->selected_block;
-  Player_Update(&game->player, &game->world, &sim, tick_dt, true);
+  game->player.gameplay_mode = (cmd->gameplay_mode == (uint8_t)GAMEPLAY_MODE_SURVIVAL)
+                                   ? GAMEPLAY_MODE_SURVIVAL
+                                   : GAMEPLAY_MODE_CREATIVE;
+  game->player.fly_enabled =
+      (game->player.gameplay_mode == GAMEPLAY_MODE_CREATIVE) && (cmd->fly_enabled != 0u);
+  Player_Update(&game->player, &game->world, &sim, tick_dt, true, game->player.fly_enabled);
   if (store_prediction) {
     game_store_prediction_sample(game, cmd->tick_id);
   }
@@ -587,6 +653,7 @@ static void game_process_network(Game *game) {
       game->last_sent_move_tick_id = 0u;
       game->has_last_sent_input_cmd = false;
       game->last_sent_input_tick_id = 0u;
+      game->last_survival_break_send_tick = 0u;
       game_send_hello(game, game->world.render_distance);
     } else if (event.type == NET_EVENT_DISCONNECTED) {
       game->connected = false;
@@ -597,6 +664,7 @@ static void game_process_network(Game *game) {
       game->last_sent_move_tick_id = 0u;
       game->has_last_sent_input_cmd = false;
       game->last_sent_input_tick_id = 0u;
+      game->last_survival_break_send_tick = 0u;
       game_reset_prediction_history(game);
     } else if (event.type == NET_EVENT_MESSAGE) {
       uint32_t confirm_ref = 0u;
@@ -616,6 +684,7 @@ static void game_process_network(Game *game) {
         game->last_sent_move_tick_id = 0u;
         game->has_last_sent_input_cmd = false;
         game->last_sent_input_tick_id = 0u;
+        game->last_survival_break_send_tick = 0u;
         game_reset_prediction_history(game);
         game->seed = event.payload.welcome.seed;
         game->network_tick_rate = (event.payload.welcome.tick_rate > 0)
@@ -654,6 +723,11 @@ static void game_process_network(Game *game) {
                               event.payload.block_delta.y, event.payload.block_delta.z,
                               event.payload.block_delta.block_id,
                               event.payload.block_delta.skylight);
+        if (game->break_visual_active && game->break_visual_x == event.payload.block_delta.x &&
+            game->break_visual_y == event.payload.block_delta.y &&
+            game->break_visual_z == event.payload.block_delta.z) {
+          game_reset_break_visual(game);
+        }
         break;
 
       case NET_MSG_S2C_CHUNK_UNLOAD:
@@ -676,17 +750,121 @@ static void game_process_network(Game *game) {
   }
 }
 
+static Vector3 game_view_direction(const Game *game) {
+  float yaw;
+  float pitch;
+  float cos_pitch;
+  if (game == NULL) {
+    return (Vector3){0.0f, 0.0f, 1.0f};
+  }
+
+  yaw = game->view_initialized ? game->view_yaw : game->player.yaw;
+  pitch = game->view_initialized ? game->view_pitch : game->player.pitch;
+  cos_pitch = cosf(pitch);
+  return Vector3Normalize((Vector3){
+      sinf(yaw) * cos_pitch,
+      sinf(pitch),
+      cosf(yaw) * cos_pitch,
+  });
+}
+
+static bool game_raycast_target_block(const Game *game, VoxelRaycastHit *out_hit) {
+  Vector3 eye;
+  Vector3 dir;
+
+  if (game == NULL || out_hit == NULL) {
+    return false;
+  }
+
+  eye = Player_GetEyePosition(&game->player);
+  dir = game_view_direction(game);
+  return Raycast_VoxelForPlacement(&game->world, eye, dir, PLAYER_REACH_DISTANCE, out_hit) &&
+         out_hit->hit;
+}
+
+static void game_register_break_hit(Game *game, const VoxelRaycastHit *hit) {
+  int durability;
+
+  if (game == NULL || hit == NULL || !hit->hit) {
+    return;
+  }
+  if (hit->block_id == BLOCK_BEDROCK) {
+    game_reset_break_visual(game);
+    return;
+  }
+
+  durability = Block_GetDurability(hit->block_id);
+  if (durability <= 0) {
+    game_reset_break_visual(game);
+    return;
+  }
+
+  if (!game->break_visual_active || game->break_visual_x != hit->block_x ||
+      game->break_visual_y != hit->block_y || game->break_visual_z != hit->block_z) {
+    game->break_visual_active = true;
+    game->break_visual_x = hit->block_x;
+    game->break_visual_y = hit->block_y;
+    game->break_visual_z = hit->block_z;
+    game->break_visual_damage = 0.0f;
+    game->break_visual_last_recover_tick = 0u;
+  }
+
+  game->break_visual_damage += GAME_BREAK_DAMAGE_PER_HIT;
+  game->break_visual_last_tick = game->network_tick_counter;
+  if (game->break_visual_damage >= (float)durability) {
+    game_reset_break_visual(game);
+  }
+}
+
+static int game_break_visual_stage(const Game *game) {
+  uint8_t block_id;
+  int durability;
+  float ratio;
+  int stage;
+
+  if (game == NULL || !game->break_visual_active) {
+    return -1;
+  }
+
+  block_id = World_GetBlock(&game->world, game->break_visual_x, game->break_visual_y,
+                            game->break_visual_z);
+  durability = Block_GetDurability(block_id);
+  if (durability <= 0) {
+    return -1;
+  }
+
+  ratio = game->break_visual_damage / (float)durability;
+  ratio = Clamp(ratio, 0.0f, 0.9999f);
+  stage = (int)floorf(ratio * 10.0f);
+  if (stage < 0) {
+    stage = 0;
+  }
+  if (stage > 9) {
+    stage = 9;
+  }
+  return stage;
+}
+
 static void game_draw_target_block_highlight(Game *game, const Camera3D *camera) {
+  int break_stage;
+  VoxelRaycastHit hit;
+  (void)camera;
+
   if (game == NULL || camera == NULL || !game->cursor_locked || game_is_paused(game)) {
     return;
   }
 
-  Vector3 ray_direction = Vector3Subtract(camera->target, camera->position);
-  VoxelRaycastHit hit;
-  if (Raycast_VoxelForPlacement(&game->world, camera->position, ray_direction,
-                                PLAYER_REACH_DISTANCE, &hit) &&
-      hit.hit) {
+  if (game_raycast_target_block(game, &hit)) {
     SelectionHighlight_Draw(&hit);
+  }
+
+  if (game->gameplay_mode == GAMEPLAY_MODE_SURVIVAL && game->break_visual_active) {
+    break_stage = game_break_visual_stage(game);
+    if (break_stage >= 0) {
+      SelectionHighlight_DrawDamageOverlay(game->terrain_texture, game->break_visual_x,
+                                           game->break_visual_y, game->break_visual_z,
+                                           break_stage);
+    }
   }
 }
 
@@ -781,6 +959,9 @@ bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connec
   game->last_sent_move_tick_id = 0u;
   game->has_last_sent_input_cmd = false;
   game->last_sent_input_tick_id = 0u;
+  game->last_survival_break_send_tick = 0u;
+  game->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
+  game->fly_enabled = false;
   game->remote_mode = (connect_host != NULL && connect_host[0] != '\0');
   game->cursor_locked = true;
   game->pending_lock_request = true;
@@ -886,6 +1067,9 @@ bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connec
   int spawn_y = World_GetTopY(&game->world, 0, 0);
   Vector3 spawn = {0.5f, (float)spawn_y + 2.0f, 0.5f};
   Player_Init(&game->player, spawn);
+  game->player.gameplay_mode = game->gameplay_mode;
+  game->player.fly_enabled = game->fly_enabled;
+  game_reset_break_visual(game);
   game->view_yaw = game->player.yaw;
   game->view_pitch = game->player.pitch;
   game->view_initialized = true;
@@ -1024,6 +1208,31 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
     set_cursor_locked(game, !game->cursor_locked);
   }
 
+  if (input->mode_toggle_pressed) {
+    if (game->gameplay_mode == GAMEPLAY_MODE_CREATIVE) {
+      game->gameplay_mode = GAMEPLAY_MODE_SURVIVAL;
+      game->fly_enabled = false;
+    } else {
+      game->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
+    }
+    game_reset_break_visual(game);
+  }
+
+  if (input->fly_toggle_pressed && game->gameplay_mode == GAMEPLAY_MODE_CREATIVE &&
+      !game_is_paused(game) && game->cursor_locked) {
+    game->fly_enabled = !game->fly_enabled;
+  }
+  if (game->gameplay_mode == GAMEPLAY_MODE_SURVIVAL) {
+    game->fly_enabled = false;
+  }
+  game->player.gameplay_mode = game->gameplay_mode;
+  game->player.fly_enabled = game->fly_enabled;
+  if (game->gameplay_mode != GAMEPLAY_MODE_SURVIVAL) {
+    game_reset_break_visual(game);
+  } else {
+    game_decay_break_visual(game);
+  }
+
   if (!game_is_paused(game) && game->cursor_locked && !IsWindowFocused()) {
     game->pending_lock_request = true;
   }
@@ -1039,6 +1248,7 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
       (!game_is_paused(game) && game->cursor_locked) ? input->mouse_wheel_delta : 0.0f;
   GameplayInputCmd gameplay_cmd = {0};
   NetPlayerMove player_move = {0};
+  bool force_break_pulse = false;
   bool gameplay_enabled = (!game_is_paused(game) && game->cursor_locked);
   Player_ApplyHotbarScroll(&game->player, hotbar_scroll);
 
@@ -1046,14 +1256,37 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
   game_process_network(game);
 
   Game_BuildGameplayInputCmd(input, game->network_tick_counter, game->player.selected_block,
-                             gameplay_enabled, &gameplay_cmd);
+                             game->gameplay_mode, game->fly_enabled, gameplay_enabled,
+                             &gameplay_cmd);
+
+  if (game->gameplay_mode == GAMEPLAY_MODE_SURVIVAL && gameplay_enabled && input->left_click_held) {
+    uint32_t ticks_since_pulse = game->network_tick_counter - game->last_survival_break_send_tick;
+    if (game->last_survival_break_send_tick == 0u ||
+        ticks_since_pulse >= GAME_SURVIVAL_BREAK_PULSE_TICKS) {
+      gameplay_cmd.buttons |= GAMEPLAY_INPUT_LEFT_CLICK;
+      force_break_pulse = true;
+    }
+  } else if (game->gameplay_mode != GAMEPLAY_MODE_SURVIVAL || !input->left_click_held) {
+    game->last_survival_break_send_tick = 0u;
+  }
+
+  if (force_break_pulse) {
+    VoxelRaycastHit hit = {0};
+    if (game_raycast_target_block(game, &hit)) {
+      game_register_break_hit(game, &hit);
+    }
+  }
+
   if (game->welcome_received) {
     bool should_send_input;
     bool should_send_move;
     game_store_input_cmd(game, &gameplay_cmd);
-    should_send_input = game_should_send_input(game, &gameplay_cmd);
+    should_send_input = force_break_pulse || game_should_send_input(game, &gameplay_cmd);
     if (should_send_input && game_send_input(game, &gameplay_cmd)) {
       game_mark_input_sent(game, &gameplay_cmd);
+      if (force_break_pulse) {
+        game->last_survival_break_send_tick = gameplay_cmd.tick_id;
+      }
     }
     game_predict_local_player(game, &gameplay_cmd, tick_dt);
 

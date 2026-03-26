@@ -102,6 +102,8 @@ void HUD_BuildInfoPanel(UiContext *ui, const Player *player, const World *world)
   const char *dirs[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
   const char *biome =
       WorldGen_GetBiomeName(&world->generator, (int)player->position.x, (int)player->position.z);
+  const char *mode_name =
+      (player->gameplay_mode == GAMEPLAY_MODE_SURVIVAL) ? "Survival" : "Creative";
 
   UiStyle info_panel = UI_Style();
   info_panel.direction = UI_DIRECTION_COLUMN;
@@ -122,6 +124,8 @@ void HUD_BuildInfoPanel(UiContext *ui, const Player *player, const World *world)
   UI_Text(ui, "xyz",
           TextFormat("XYZ: %.2f, %.2f, %.2f", player->position.x, player->position.y,
                      player->position.z),
+          NULL, &text);
+  UI_Text(ui, "mode", TextFormat("Mode: %s%s", mode_name, player->fly_enabled ? " (Fly)" : ""),
           NULL, &text);
   UI_Text(ui, "biome", TextFormat("Biome: %s", biome), NULL, &text);
 

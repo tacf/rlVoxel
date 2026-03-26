@@ -54,6 +54,53 @@ static int64_t make_chunk_key(int cx, int cz) { return ((int64_t)cx << 32) | (ui
 #define SERVER_MOVE_MAX_HORIZ_PER_TICK 1.20f
 #define SERVER_MOVE_MAX_VERT_PER_TICK 2.40f
 #define SERVER_MOVE_MAX_TICK_GAP 20u
+#define SERVER_BREAK_DAMAGE_PER_HIT 1.0f
+#define SERVER_BREAK_RECOVERY_DELAY_TICKS 10u
+#define SERVER_BREAK_RECOVERY_INTERVAL_TICKS 5u
+
+static void server_reset_break_state(ServerCore *server) {
+  if (server == NULL) {
+    return;
+  }
+  server->break_state_active = false;
+  server->break_block_x = 0;
+  server->break_block_y = 0;
+  server->break_block_z = 0;
+  server->break_damage = 0.0f;
+  server->break_last_tick = 0u;
+  server->break_last_recover_tick = 0u;
+}
+
+static void server_decay_break_state(ServerCore *server) {
+  uint32_t recovery_start_tick;
+  uint32_t elapsed_recovery_ticks;
+  uint32_t recovery_steps;
+
+  if (server == NULL || !server->break_state_active) {
+    return;
+  }
+
+  recovery_start_tick = server->break_last_tick + SERVER_BREAK_RECOVERY_DELAY_TICKS;
+  if (server->tick_counter < recovery_start_tick) {
+    return;
+  }
+
+  if (server->break_last_recover_tick < recovery_start_tick) {
+    server->break_last_recover_tick = recovery_start_tick;
+  }
+
+  if (server->tick_counter < server->break_last_recover_tick + SERVER_BREAK_RECOVERY_INTERVAL_TICKS) {
+    return;
+  }
+
+  elapsed_recovery_ticks = server->tick_counter - server->break_last_recover_tick;
+  recovery_steps = elapsed_recovery_ticks / SERVER_BREAK_RECOVERY_INTERVAL_TICKS;
+  server->break_damage -= (float)recovery_steps * SERVER_BREAK_DAMAGE_PER_HIT;
+  server->break_last_recover_tick += recovery_steps * SERVER_BREAK_RECOVERY_INTERVAL_TICKS;
+  if (server->break_damage <= 0.0f) {
+    server_reset_break_state(server);
+  }
+}
 
 static bool sent_chunk_contains(const ServerCore *server, int64_t key) {
   for (size_t i = 0; i < server->sent_chunk_count; i++) {
@@ -312,9 +359,36 @@ static void server_apply_interactions(ServerCore *server, const GameplayInputCmd
   if ((input->buttons & GAMEPLAY_INPUT_LEFT_CLICK) != 0) {
     if (Raycast_VoxelForPlacement(&server->world, eye, dir, PLAYER_REACH_DISTANCE, &hit) &&
         hit.hit) {
-      if (hit.block_id != BLOCK_BEDROCK &&
-          World_SetBlock(&server->world, hit.block_x, hit.block_y, hit.block_z, BLOCK_AIR)) {
-        server_send_block_delta(server, hit.block_x, hit.block_y, hit.block_z);
+      if (server->gameplay_mode == GAMEPLAY_MODE_CREATIVE) {
+        if (hit.block_id != BLOCK_BEDROCK &&
+            World_SetBlock(&server->world, hit.block_x, hit.block_y, hit.block_z, BLOCK_AIR)) {
+          server_send_block_delta(server, hit.block_x, hit.block_y, hit.block_z);
+          server_reset_break_state(server);
+        }
+      } else {
+        int durability = Block_GetDurability(hit.block_id);
+        if (hit.block_id == BLOCK_BEDROCK || durability <= 0) {
+          server_reset_break_state(server);
+          return;
+        }
+
+        if (!server->break_state_active || server->break_block_x != hit.block_x ||
+            server->break_block_y != hit.block_y || server->break_block_z != hit.block_z) {
+          server->break_state_active = true;
+          server->break_block_x = hit.block_x;
+          server->break_block_y = hit.block_y;
+          server->break_block_z = hit.block_z;
+          server->break_damage = 0.0f;
+          server->break_last_recover_tick = 0u;
+        }
+
+        server->break_damage += SERVER_BREAK_DAMAGE_PER_HIT;
+        server->break_last_tick = server->tick_counter;
+        if (server->break_damage >= (float)durability &&
+            World_SetBlock(&server->world, hit.block_x, hit.block_y, hit.block_z, BLOCK_AIR)) {
+          server_send_block_delta(server, hit.block_x, hit.block_y, hit.block_z);
+          server_reset_break_state(server);
+        }
       }
     }
   }
@@ -579,6 +653,11 @@ static void server_process_incoming(ServerCore *server) {
       memset(&server->current_move, 0, sizeof(server->current_move));
       server->pending_move_available = false;
       server->last_applied_input_tick = 0;
+      server->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
+      server->fly_enabled = false;
+      server->player.gameplay_mode = server->gameplay_mode;
+      server->player.fly_enabled = server->fly_enabled;
+      server_reset_break_state(server);
     } else if (event.type == NET_EVENT_MESSAGE) {
       if (event.message_type == NET_MSG_C2S_HELLO) {
         server->has_client = true;
@@ -594,6 +673,9 @@ static void server_process_incoming(ServerCore *server) {
         server->last_applied_input_tick = 0;
         memset(&server->current_move, 0, sizeof(server->current_move));
         server->pending_move_available = false;
+        server->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
+        server->fly_enabled = false;
+        server_reset_break_state(server);
         server_send_welcome(server);
         server_send_player_state(server);
       } else if (event.message_type == NET_MSG_C2S_INPUT_CMD && server->client_ready) {
@@ -621,11 +703,22 @@ void ServerCore_Tick(ServerCore *server) {
   }
 
   server_consume_latest_input(server, &input);
+  if (input.gameplay_mode == (uint8_t)GAMEPLAY_MODE_SURVIVAL) {
+    server->gameplay_mode = GAMEPLAY_MODE_SURVIVAL;
+  } else {
+    server->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
+  }
+  server->fly_enabled =
+      (server->gameplay_mode == GAMEPLAY_MODE_CREATIVE) && (input.fly_enabled != 0u);
+  server->player.gameplay_mode = server->gameplay_mode;
+  server->player.fly_enabled = server->fly_enabled;
+
   has_new_move = server_consume_latest_move(server, &move);
   if (has_new_move && !server_apply_client_move(server, &move)) {
     should_send_player_state = true;
   }
 
+  server_decay_break_state(server);
   server->player.selected_block = input.selected_block;
   server_apply_interactions(server, &input);
 
@@ -745,6 +838,11 @@ bool ServerCore_Init(ServerCore *server, const ServerConfig *config, NetEndpoint
   spawn_y = World_GetTopY(&server->world, 0, 0);
   spawn = (Vector3){0.5f, (float)spawn_y + 2.0f, 0.5f};
   Player_Init(&server->player, spawn);
+  server->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
+  server->fly_enabled = false;
+  server->player.gameplay_mode = server->gameplay_mode;
+  server->player.fly_enabled = server->fly_enabled;
+  server_reset_break_state(server);
 
   return true;
 }

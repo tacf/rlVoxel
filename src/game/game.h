@@ -59,12 +59,23 @@ typedef struct Game {
   GameplayInputCmd last_sent_input_cmd;
   uint32_t last_sent_input_tick_id;
   bool has_last_sent_input_cmd;
+  uint32_t last_survival_break_send_tick;
+  GameplayMode gameplay_mode;
+  bool fly_enabled;
   PredictedPlayerSample prediction_history[GAME_PREDICTION_HISTORY_SIZE];
   GameplayInputHistoryEntry input_history[GAME_INPUT_HISTORY_SIZE];
   float view_yaw;
   float view_pitch;
   bool view_initialized;
   bool suppress_next_frame_look;
+
+  bool break_visual_active;
+  int break_visual_x;
+  int break_visual_y;
+  int break_visual_z;
+  float break_visual_damage;
+  uint32_t break_visual_last_tick;
+  uint32_t break_visual_last_recover_tick;
 
   NetEndpoint *net;
   bool net_initialized;

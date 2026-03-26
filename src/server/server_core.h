@@ -1,7 +1,6 @@
 #ifndef RLVOXEL_SERVER_CORE_H
 #define RLVOXEL_SERVER_CORE_H
 
-#include <bits/pthreadtypes.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -81,6 +80,16 @@ typedef struct ServerCore {
   uint32_t last_applied_input_tick;
   uint32_t tick_counter;
   uint32_t next_sequence;
+  GameplayMode gameplay_mode;
+  bool fly_enabled;
+
+  bool break_state_active;
+  int break_block_x;
+  int break_block_y;
+  int break_block_z;
+  float break_damage;
+  uint32_t break_last_tick;
+  uint32_t break_last_recover_tick;
 
   int64_t *sent_chunk_keys;
   size_t sent_chunk_count;

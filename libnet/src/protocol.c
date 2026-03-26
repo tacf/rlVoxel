@@ -7,7 +7,7 @@
 #define NET_HEADER_BYTES 16u
 #define NET_PAYLOAD_HELLO_BYTES 4u
 #define NET_PAYLOAD_WELCOME_BYTES 16u
-#define NET_PAYLOAD_INPUT_CMD_BYTES 14u
+#define NET_PAYLOAD_INPUT_CMD_BYTES 16u
 #define NET_PAYLOAD_PLAYER_MOVE_BYTES 37u
 #define NET_PAYLOAD_PLAYER_STATE_BYTES 45u
 #define NET_PAYLOAD_CHUNK_DATA_BYTES                                                               \
@@ -227,6 +227,8 @@ bool Protocol_EncodeInputCmd(uint32_t sequence, uint32_t tick, const GameplayInp
   offset += 4;
   out[offset++] = msg->buttons;
   out[offset++] = msg->selected_block;
+  out[offset++] = msg->gameplay_mode;
+  out[offset++] = msg->fly_enabled;
   memcpy(out + offset, &msg->look_delta_x, sizeof(float));
   offset += sizeof(float);
   memcpy(out + offset, &msg->look_delta_y, sizeof(float));
@@ -249,6 +251,8 @@ bool Protocol_DecodeInputCmd(const uint8_t *data, size_t size, NetMessageHeader 
   offset += 4;
   out_msg->buttons = data[offset++];
   out_msg->selected_block = data[offset++];
+  out_msg->gameplay_mode = data[offset++];
+  out_msg->fly_enabled = data[offset++];
   memcpy(&out_msg->look_delta_x, data + offset, sizeof(float));
   offset += sizeof(float);
   memcpy(&out_msg->look_delta_y, data + offset, sizeof(float));

@@ -60,6 +60,8 @@ cmake --build build -j
 - Mouse wheel: cycle hotbar selection (when cursor locked)
 - Left click: break block
 - Right click: place block
+- `F4`: toggle gameplay mode (`Creative` <-> `Survival`)
+- `F`: toggle fly mode (creative only)
 - `Esc`: open/close pause menu (closes debug menu first if open)
 - `Alt` (left or right): toggle cursor lock/unlock
 - `F11`: toggle debug menu (profiler, frame graph, telemetry)

@@ -45,7 +45,7 @@ Networking is split into three layers:
 2. Client connects with `Net_Connect`.
 3. Same typed protocol flow, carried by ENet.
 
-## Protocol v1
+## Protocol v2
 
 Every packet begins with `NetMessageHeader`:
 
@@ -69,7 +69,7 @@ Message set:
 
 Packet sizing notes:
 
-- Most v1 messages are fixed-size (`Protocol_FixedPayloadSize` / `Protocol_FixedPacketSize`).
+- Most v2 messages are fixed-size (`Protocol_FixedPayloadSize` / `Protocol_FixedPacketSize`).
 - `S2C_Disconnect` is variable-length (reason text), so fixed-size helpers return `0`.
 
 ENet channel policy:
@@ -77,6 +77,7 @@ ENet channel policy:
 - Channel `0`, reliable ordered: hello/welcome, chunk data, block deltas, unload, disconnect.
 - Channel `1`, `C2S_PlayerMove`: unreliable sequenced (high-rate movement snapshots, latest wins).
 - Channel `1`, `C2S_InputCmd`: reliable ordered (action edges + selected block authority).
+  - Also carries gameplay mode (`creative`/`survival`) and fly toggle state.
 - Channel `1`, `S2C_PlayerState`: reliable ordered (corrections + periodic sync).
 
 `S2C_PlayerState` timeline anchors:
@@ -92,7 +93,7 @@ ENet channel policy:
 - Client predicts local movement every tick.
 - Client sends:
   - `C2S_PlayerMove`: pose/velocity/look state.
-  - `C2S_InputCmd`: action edges + selected block.
+  - `C2S_InputCmd`: action edges + selected block + mode/fly state.
 - Server validates and applies movement snapshot when valid.
 - Server sends `S2C_PlayerState` for correction and periodic sync.
 

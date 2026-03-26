@@ -47,6 +47,7 @@ extern BlockDef g_block_defs[256];
  * Must be called once at startup.
  */
 void Blocks_Init(void);
+int Block_GetDurability(uint8_t block_id);
 
 /* Wrapper functions for game code */
 static inline bool Block_IsSolid(uint8_t block_id) {

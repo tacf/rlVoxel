@@ -16,8 +16,8 @@
 
 /** Wire magic ('RVXL') present in every packet header. */
 #define RVNET_MAGIC 0x5256584Cu /* 'RVXL' */
-/** Protocol version for v1 compatibility checks. */
-#define RVNET_VERSION 1u
+/** Protocol version for compatibility checks. */
+#define RVNET_VERSION 2u
 /** Max UTF-8-safe disconnect reason bytes (excluding trailing NUL). */
 #define RVNET_MAX_DISCONNECT_REASON 128u
 
@@ -33,6 +33,11 @@ typedef enum NetMessageType {
   NET_MSG_S2C_DISCONNECT = 8,
   NET_MSG_C2S_PLAYER_MOVE = 9,
 } NetMessageType;
+
+typedef enum GameplayMode {
+  GAMEPLAY_MODE_CREATIVE = 0,
+  GAMEPLAY_MODE_SURVIVAL = 1,
+} GameplayMode;
 
 /** Bitfield flags for GameplayInputCmd.buttons. */
 enum {
@@ -72,11 +77,14 @@ typedef struct NetWelcome {
  *
  * Used for edge-triggered actions (clicks) and selected block authority.
  * Movement authority is carried by NetPlayerMove.
+ * Also carries gameplay mode/fly flags so server can enforce mode rules.
  */
 typedef struct GameplayInputCmd {
   uint32_t tick_id;
   uint8_t buttons;
   uint8_t selected_block;
+  uint8_t gameplay_mode;
+  uint8_t fly_enabled;
   float look_delta_x;
   float look_delta_y;
 } GameplayInputCmd;
