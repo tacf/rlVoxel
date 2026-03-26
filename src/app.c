@@ -113,6 +113,7 @@ int main(int argc, char **argv) {
 
     GameInputSnapshot frame_input = {0};
     Game_CaptureFrameInput(&frame_input);
+    Game_ApplyFrameLook(&game, &frame_input);
     Game_MergeFrameInput(&pending_input, &frame_input);
 
     Profiler_BeginFrame();

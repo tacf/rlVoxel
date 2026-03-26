@@ -127,7 +127,7 @@ void Player_ApplyHotbarScroll(Player *player, float mouse_wheel_delta) {
       steps = 1;
     }
 
-    int direction = (mouse_wheel_delta > 0.0f) ? -1 : 1; /* Minecraft feel */
+    int direction = (mouse_wheel_delta > 0.0f) ? -1 : 1;
     for (int i = 0; i < steps; i++) {
       player->hotbar_index = player_wrap_hotbar_index(player->hotbar_index + direction);
     }

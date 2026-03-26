@@ -3,6 +3,7 @@
 
 #include "raylib.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "net/protocol.h"
 
@@ -16,6 +17,7 @@ typedef struct GameInputSnapshot {
 
   bool escape_pressed;
   bool debug_menu_pressed;
+  bool cursor_lock_toggle_pressed;
   bool left_click_pressed;
   bool right_click_pressed;
 

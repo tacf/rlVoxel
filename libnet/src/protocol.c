@@ -1,8 +1,21 @@
 #include "net/protocol.h"
+#include "constants.h"
 
+#include <stdint.h>
 #include <string.h>
 
 #define NET_HEADER_BYTES 16u
+#define NET_PAYLOAD_HELLO_BYTES 4u
+#define NET_PAYLOAD_WELCOME_BYTES 16u
+#define NET_PAYLOAD_INPUT_CMD_BYTES 14u
+#define NET_PAYLOAD_PLAYER_MOVE_BYTES 37u
+#define NET_PAYLOAD_PLAYER_STATE_BYTES 45u
+#define NET_PAYLOAD_CHUNK_DATA_BYTES                                                               \
+  (8u + (size_t)WORLD_CHUNK_VOLUME + (size_t)WORLD_CHUNK_LIGHT_BYTES +                             \
+   (size_t)(WORLD_CHUNK_SIZE_X * WORLD_CHUNK_SIZE_Z))
+#define NET_PAYLOAD_BLOCK_DELTA_BYTES 14u
+#define NET_PAYLOAD_CHUNK_UNLOAD_BYTES 8u
+#define NET_PAYLOAD_DISCONNECT_PREFIX_BYTES 2u
 
 static bool ensure_space(size_t offset, size_t need, size_t cap) { return (offset + need) <= cap; }
 
@@ -60,6 +73,63 @@ static size_t encode_header(uint8_t *out, size_t out_cap, NetMessageType type, u
 
 size_t Protocol_HeaderSize(void) { return NET_HEADER_BYTES; }
 
+const char *Protocol_MessageTypeName(NetMessageType type) {
+  switch (type) {
+  case NET_MSG_C2S_HELLO:
+    return "C2S_Hello";
+  case NET_MSG_S2C_WELCOME:
+    return "S2C_Welcome";
+  case NET_MSG_C2S_INPUT_CMD:
+    return "C2S_InputCmd";
+  case NET_MSG_S2C_PLAYER_STATE:
+    return "S2C_PlayerState";
+  case NET_MSG_S2C_CHUNK_DATA:
+    return "S2C_ChunkData";
+  case NET_MSG_S2C_BLOCK_DELTA:
+    return "S2C_BlockDelta";
+  case NET_MSG_S2C_CHUNK_UNLOAD:
+    return "S2C_ChunkUnload";
+  case NET_MSG_S2C_DISCONNECT:
+    return "S2C_Disconnect";
+  case NET_MSG_C2S_PLAYER_MOVE:
+    return "C2S_PlayerMove";
+  default:
+    return "Unknown";
+  }
+}
+
+size_t Protocol_FixedPayloadSize(NetMessageType type) {
+  switch (type) {
+  case NET_MSG_C2S_HELLO:
+    return NET_PAYLOAD_HELLO_BYTES;
+  case NET_MSG_S2C_WELCOME:
+    return NET_PAYLOAD_WELCOME_BYTES;
+  case NET_MSG_C2S_INPUT_CMD:
+    return NET_PAYLOAD_INPUT_CMD_BYTES;
+  case NET_MSG_C2S_PLAYER_MOVE:
+    return NET_PAYLOAD_PLAYER_MOVE_BYTES;
+  case NET_MSG_S2C_PLAYER_STATE:
+    return NET_PAYLOAD_PLAYER_STATE_BYTES;
+  case NET_MSG_S2C_CHUNK_DATA:
+    return NET_PAYLOAD_CHUNK_DATA_BYTES;
+  case NET_MSG_S2C_BLOCK_DELTA:
+    return NET_PAYLOAD_BLOCK_DELTA_BYTES;
+  case NET_MSG_S2C_CHUNK_UNLOAD:
+    return NET_PAYLOAD_CHUNK_UNLOAD_BYTES;
+  case NET_MSG_S2C_DISCONNECT:
+  default:
+    return 0u;
+  }
+}
+
+size_t Protocol_FixedPacketSize(NetMessageType type) {
+  size_t payload_size = Protocol_FixedPayloadSize(type);
+  if (payload_size == 0u) {
+    return 0u;
+  }
+  return NET_HEADER_BYTES + payload_size;
+}
+
 bool Protocol_ParseHeader(const uint8_t *data, size_t size, NetMessageHeader *out_header) {
   if (data == NULL || out_header == NULL || size < NET_HEADER_BYTES) {
     return false;
@@ -85,7 +155,7 @@ bool Protocol_EncodeHello(uint32_t sequence, uint32_t tick, const NetHello *msg,
   }
 
   size_t offset = encode_header(out, out_cap, NET_MSG_C2S_HELLO, sequence, tick);
-  if (offset == 0 || !ensure_space(offset, 4, out_cap)) {
+  if (offset == 0 || !ensure_space(offset, NET_PAYLOAD_HELLO_BYTES, out_cap)) {
     return false;
   }
 
@@ -98,7 +168,7 @@ bool Protocol_EncodeHello(uint32_t sequence, uint32_t tick, const NetHello *msg,
 bool Protocol_DecodeHello(const uint8_t *data, size_t size, NetMessageHeader *out_header,
                           NetHello *out_msg) {
   if (out_msg == NULL || !Protocol_ParseHeader(data, size, out_header) ||
-      out_header->type != NET_MSG_C2S_HELLO || size < NET_HEADER_BYTES + 4) {
+      out_header->type != NET_MSG_C2S_HELLO || size < Protocol_FixedPacketSize(NET_MSG_C2S_HELLO)) {
     return false;
   }
 
@@ -113,7 +183,7 @@ bool Protocol_EncodeWelcome(uint32_t sequence, uint32_t tick, const NetWelcome *
   }
 
   size_t offset = encode_header(out, out_cap, NET_MSG_S2C_WELCOME, sequence, tick);
-  if (offset == 0 || !ensure_space(offset, 16, out_cap)) {
+  if (offset == 0 || !ensure_space(offset, NET_PAYLOAD_WELCOME_BYTES, out_cap)) {
     return false;
   }
 
@@ -131,7 +201,8 @@ bool Protocol_EncodeWelcome(uint32_t sequence, uint32_t tick, const NetWelcome *
 bool Protocol_DecodeWelcome(const uint8_t *data, size_t size, NetMessageHeader *out_header,
                             NetWelcome *out_msg) {
   if (out_msg == NULL || !Protocol_ParseHeader(data, size, out_header) ||
-      out_header->type != NET_MSG_S2C_WELCOME || size < NET_HEADER_BYTES + 16) {
+      out_header->type != NET_MSG_S2C_WELCOME ||
+      size < Protocol_FixedPacketSize(NET_MSG_S2C_WELCOME)) {
     return false;
   }
 
@@ -148,7 +219,7 @@ bool Protocol_EncodeInputCmd(uint32_t sequence, uint32_t tick, const GameplayInp
   }
 
   size_t offset = encode_header(out, out_cap, NET_MSG_C2S_INPUT_CMD, sequence, tick);
-  if (offset == 0 || !ensure_space(offset, 14, out_cap)) {
+  if (offset == 0 || !ensure_space(offset, NET_PAYLOAD_INPUT_CMD_BYTES, out_cap)) {
     return false;
   }
 
@@ -168,7 +239,8 @@ bool Protocol_EncodeInputCmd(uint32_t sequence, uint32_t tick, const GameplayInp
 bool Protocol_DecodeInputCmd(const uint8_t *data, size_t size, NetMessageHeader *out_header,
                              GameplayInputCmd *out_msg) {
   if (out_msg == NULL || !Protocol_ParseHeader(data, size, out_header) ||
-      out_header->type != NET_MSG_C2S_INPUT_CMD || size < NET_HEADER_BYTES + 14) {
+      out_header->type != NET_MSG_C2S_INPUT_CMD ||
+      size < Protocol_FixedPacketSize(NET_MSG_C2S_INPUT_CMD)) {
     return false;
   }
 
@@ -183,6 +255,80 @@ bool Protocol_DecodeInputCmd(const uint8_t *data, size_t size, NetMessageHeader 
   return true;
 }
 
+bool Protocol_EncodePlayerMove(uint32_t sequence, uint32_t tick, const NetPlayerMove *msg,
+                               uint8_t *out, size_t out_cap, size_t *out_size) {
+  if (msg == NULL || out == NULL || out_size == NULL) {
+    return false;
+  }
+
+  size_t offset = encode_header(out, out_cap, NET_MSG_C2S_PLAYER_MOVE, sequence, tick);
+  if (offset == 0 || !ensure_space(offset, NET_PAYLOAD_PLAYER_MOVE_BYTES, out_cap)) {
+    return false;
+  }
+
+  write_u32_le(out + offset, msg->tick_id);
+  offset += 4;
+
+  memcpy(out + offset, &msg->position_x, sizeof(float));
+  offset += sizeof(float);
+  memcpy(out + offset, &msg->position_y, sizeof(float));
+  offset += sizeof(float);
+  memcpy(out + offset, &msg->position_z, sizeof(float));
+  offset += sizeof(float);
+
+  memcpy(out + offset, &msg->velocity_x, sizeof(float));
+  offset += sizeof(float);
+  memcpy(out + offset, &msg->velocity_y, sizeof(float));
+  offset += sizeof(float);
+  memcpy(out + offset, &msg->velocity_z, sizeof(float));
+  offset += sizeof(float);
+
+  memcpy(out + offset, &msg->yaw, sizeof(float));
+  offset += sizeof(float);
+  memcpy(out + offset, &msg->pitch, sizeof(float));
+  offset += sizeof(float);
+
+  out[offset++] = msg->on_ground;
+
+  *out_size = offset;
+  return true;
+}
+
+bool Protocol_DecodePlayerMove(const uint8_t *data, size_t size, NetMessageHeader *out_header,
+                               NetPlayerMove *out_msg) {
+  if (out_msg == NULL || !Protocol_ParseHeader(data, size, out_header) ||
+      out_header->type != NET_MSG_C2S_PLAYER_MOVE ||
+      size < Protocol_FixedPacketSize(NET_MSG_C2S_PLAYER_MOVE)) {
+    return false;
+  }
+
+  size_t offset = NET_HEADER_BYTES;
+  out_msg->tick_id = read_u32_le(data + offset);
+  offset += 4;
+
+  memcpy(&out_msg->position_x, data + offset, sizeof(float));
+  offset += sizeof(float);
+  memcpy(&out_msg->position_y, data + offset, sizeof(float));
+  offset += sizeof(float);
+  memcpy(&out_msg->position_z, data + offset, sizeof(float));
+  offset += sizeof(float);
+
+  memcpy(&out_msg->velocity_x, data + offset, sizeof(float));
+  offset += sizeof(float);
+  memcpy(&out_msg->velocity_y, data + offset, sizeof(float));
+  offset += sizeof(float);
+  memcpy(&out_msg->velocity_z, data + offset, sizeof(float));
+  offset += sizeof(float);
+
+  memcpy(&out_msg->yaw, data + offset, sizeof(float));
+  offset += sizeof(float);
+  memcpy(&out_msg->pitch, data + offset, sizeof(float));
+  offset += sizeof(float);
+
+  out_msg->on_ground = data[offset++];
+  return true;
+}
+
 bool Protocol_EncodePlayerState(uint32_t sequence, uint32_t tick,
                                 const AuthoritativePlayerState *msg, uint8_t *out, size_t out_cap,
                                 size_t *out_size) {
@@ -191,11 +337,13 @@ bool Protocol_EncodePlayerState(uint32_t sequence, uint32_t tick,
   }
 
   size_t offset = encode_header(out, out_cap, NET_MSG_S2C_PLAYER_STATE, sequence, tick);
-  if (offset == 0 || !ensure_space(offset, 41, out_cap)) {
+  if (offset == 0 || !ensure_space(offset, NET_PAYLOAD_PLAYER_STATE_BYTES, out_cap)) {
     return false;
   }
 
   write_u32_le(out + offset, msg->tick_id);
+  offset += 4;
+  write_u32_le(out + offset, msg->input_tick_id);
   offset += 4;
 
   memcpy(out + offset, &msg->position_x, sizeof(float));
@@ -229,12 +377,15 @@ bool Protocol_EncodePlayerState(uint32_t sequence, uint32_t tick,
 bool Protocol_DecodePlayerState(const uint8_t *data, size_t size, NetMessageHeader *out_header,
                                 AuthoritativePlayerState *out_msg) {
   if (out_msg == NULL || !Protocol_ParseHeader(data, size, out_header) ||
-      out_header->type != NET_MSG_S2C_PLAYER_STATE || size < NET_HEADER_BYTES + 41) {
+      out_header->type != NET_MSG_S2C_PLAYER_STATE ||
+      size < Protocol_FixedPacketSize(NET_MSG_S2C_PLAYER_STATE)) {
     return false;
   }
 
   size_t offset = NET_HEADER_BYTES;
   out_msg->tick_id = read_u32_le(data + offset);
+  offset += 4;
+  out_msg->input_tick_id = read_u32_le(data + offset);
   offset += 4;
 
   memcpy(&out_msg->position_x, data + offset, sizeof(float));
@@ -264,8 +415,7 @@ bool Protocol_DecodePlayerState(const uint8_t *data, size_t size, NetMessageHead
 
 bool Protocol_EncodeChunkData(uint32_t sequence, uint32_t tick, const NetChunkData *msg,
                               uint8_t *out, size_t out_cap, size_t *out_size) {
-  size_t payload = 8 + WORLD_CHUNK_VOLUME + WORLD_CHUNK_LIGHT_BYTES +
-                   (WORLD_CHUNK_SIZE_X * WORLD_CHUNK_SIZE_Z);
+  size_t payload = NET_PAYLOAD_CHUNK_DATA_BYTES;
 
   if (msg == NULL || out == NULL || out_size == NULL || msg->blocks == NULL ||
       msg->skylight == NULL || msg->heightmap == NULL) {
@@ -297,11 +447,11 @@ bool Protocol_EncodeChunkData(uint32_t sequence, uint32_t tick, const NetChunkDa
 
 bool Protocol_DecodeChunkData(const uint8_t *data, size_t size, NetMessageHeader *out_header,
                               NetChunkDataOwned *out_msg) {
-  size_t payload = 8 + WORLD_CHUNK_VOLUME + WORLD_CHUNK_LIGHT_BYTES +
-                   (WORLD_CHUNK_SIZE_X * WORLD_CHUNK_SIZE_Z);
+  size_t payload = NET_PAYLOAD_CHUNK_DATA_BYTES;
 
   if (out_msg == NULL || !Protocol_ParseHeader(data, size, out_header) ||
-      out_header->type != NET_MSG_S2C_CHUNK_DATA || size < NET_HEADER_BYTES + payload) {
+      out_header->type != NET_MSG_S2C_CHUNK_DATA ||
+      size < Protocol_FixedPacketSize(NET_MSG_S2C_CHUNK_DATA)) {
     return false;
   }
 
@@ -328,7 +478,7 @@ bool Protocol_EncodeBlockDelta(uint32_t sequence, uint32_t tick, const NetBlockD
   }
 
   size_t offset = encode_header(out, out_cap, NET_MSG_S2C_BLOCK_DELTA, sequence, tick);
-  if (offset == 0 || !ensure_space(offset, 14, out_cap)) {
+  if (offset == 0 || !ensure_space(offset, NET_PAYLOAD_BLOCK_DELTA_BYTES, out_cap)) {
     return false;
   }
 
@@ -348,7 +498,8 @@ bool Protocol_EncodeBlockDelta(uint32_t sequence, uint32_t tick, const NetBlockD
 bool Protocol_DecodeBlockDelta(const uint8_t *data, size_t size, NetMessageHeader *out_header,
                                NetBlockDelta *out_msg) {
   if (out_msg == NULL || !Protocol_ParseHeader(data, size, out_header) ||
-      out_header->type != NET_MSG_S2C_BLOCK_DELTA || size < NET_HEADER_BYTES + 14) {
+      out_header->type != NET_MSG_S2C_BLOCK_DELTA ||
+      size < Protocol_FixedPacketSize(NET_MSG_S2C_BLOCK_DELTA)) {
     return false;
   }
 
@@ -371,7 +522,7 @@ bool Protocol_EncodeChunkUnload(uint32_t sequence, uint32_t tick, const NetChunk
   }
 
   size_t offset = encode_header(out, out_cap, NET_MSG_S2C_CHUNK_UNLOAD, sequence, tick);
-  if (offset == 0 || !ensure_space(offset, 8, out_cap)) {
+  if (offset == 0 || !ensure_space(offset, NET_PAYLOAD_CHUNK_UNLOAD_BYTES, out_cap)) {
     return false;
   }
 
@@ -387,7 +538,8 @@ bool Protocol_EncodeChunkUnload(uint32_t sequence, uint32_t tick, const NetChunk
 bool Protocol_DecodeChunkUnload(const uint8_t *data, size_t size, NetMessageHeader *out_header,
                                 NetChunkUnload *out_msg) {
   if (out_msg == NULL || !Protocol_ParseHeader(data, size, out_header) ||
-      out_header->type != NET_MSG_S2C_CHUNK_UNLOAD || size < NET_HEADER_BYTES + 8) {
+      out_header->type != NET_MSG_S2C_CHUNK_UNLOAD ||
+      size < Protocol_FixedPacketSize(NET_MSG_S2C_CHUNK_UNLOAD)) {
     return false;
   }
 
@@ -407,7 +559,8 @@ bool Protocol_EncodeDisconnect(uint32_t sequence, uint32_t tick, const NetDiscon
 
   reason_len = (uint16_t)strnlen(msg->reason, RVNET_MAX_DISCONNECT_REASON - 1);
   offset = encode_header(out, out_cap, NET_MSG_S2C_DISCONNECT, sequence, tick);
-  if (offset == 0 || !ensure_space(offset, 2 + reason_len, out_cap)) {
+  if (offset == 0 ||
+      !ensure_space(offset, NET_PAYLOAD_DISCONNECT_PREFIX_BYTES + reason_len, out_cap)) {
     return false;
   }
 
@@ -425,7 +578,8 @@ bool Protocol_DecodeDisconnect(const uint8_t *data, size_t size, NetMessageHeade
   uint16_t reason_len;
 
   if (out_msg == NULL || !Protocol_ParseHeader(data, size, out_header) ||
-      out_header->type != NET_MSG_S2C_DISCONNECT || size < NET_HEADER_BYTES + 2) {
+      out_header->type != NET_MSG_S2C_DISCONNECT ||
+      size < NET_HEADER_BYTES + NET_PAYLOAD_DISCONNECT_PREFIX_BYTES) {
     return false;
   }
 
@@ -433,12 +587,13 @@ bool Protocol_DecodeDisconnect(const uint8_t *data, size_t size, NetMessageHeade
   if (reason_len >= RVNET_MAX_DISCONNECT_REASON) {
     return false;
   }
-  if (size < NET_HEADER_BYTES + 2u + (size_t)reason_len) {
+  if (size < NET_HEADER_BYTES + NET_PAYLOAD_DISCONNECT_PREFIX_BYTES + (size_t)reason_len) {
     return false;
   }
 
   memset(out_msg->reason, 0, sizeof(out_msg->reason));
-  memcpy(out_msg->reason, data + NET_HEADER_BYTES + 2, reason_len);
+  memcpy(out_msg->reason, data + NET_HEADER_BYTES + NET_PAYLOAD_DISCONNECT_PREFIX_BYTES,
+         reason_len);
   out_msg->reason[reason_len] = '\0';
   return true;
 }

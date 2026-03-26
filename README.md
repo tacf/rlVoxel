@@ -57,11 +57,11 @@ cmake --build build -j
 - `Space`: jump (hold repeats on landing)
 - `Left Shift`: sprint
 - Mouse: look around (when cursor locked)
-- Mouse wheel: cycle hotbar selection (only when cursor is locked and debug menu is closed)
+- Mouse wheel: cycle hotbar selection (when cursor locked)
 - Left click: break block
 - Right click: place block
-- `Esc`: toggle cursor lock (closes debug menu first if open)
-- Left click while unlocked: relock cursor (click is consumed)
+- `Esc`: open/close pause menu (closes debug menu first if open)
+- `Alt` (left or right): toggle cursor lock/unlock
 - `F11`: toggle debug menu (profiler, frame graph, telemetry)
 
 ## Contributions
@@ -133,6 +133,17 @@ Check [docs/UI.md](docs/UI.md)
 ## Networking Documentation
 
 Check [docs/NETWORKING.md](docs/NETWORKING.md)
+
+## Movement Sync Documentation
+
+Movement sync is now documented inside [docs/NETWORKING.md](docs/NETWORKING.md) under the
+**Movement Sync (v1)** section.
+
+Legacy index page: [docs/MOVEMENT_SYNC.md](docs/MOVEMENT_SYNC.md)
+
+## Network Profiler Documentation
+
+Check [docs/NET_PROFILER.md](docs/NET_PROFILER.md)
 
 ## TODO / Wishlist / Contribution Suggestions
 

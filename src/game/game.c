@@ -27,7 +27,32 @@
 #include "world/world.h"
 #include "profiling/profiler.h"
 #include "profiling/profiler_renderer.h"
+#include "diagnostics/net_profiler.h"
 #include "diagnostics/telemetry.h"
+
+/* Keep first-person look response exactly tied to local mouse deltas. */
+#define GAME_VIEW_PITCH_LIMIT 1.55f
+#define GAME_VIEW_MOUSE_SENSITIVITY 0.0023f
+#define GAME_LOOK_SPIKE_LIMIT 180.0f
+
+/*
+ * Reconciliation tuning.
+ * Rebuild only when server/prediction drift is meaningful.
+ */
+#define GAME_RECONCILE_SNAP_DISTANCE 2.00f
+#define GAME_RECONCILE_IGNORE_HORIZONTAL 0.12f
+#define GAME_RECONCILE_IGNORE_VERTICAL 0.08f
+
+/*
+ * Input replication policy:
+ * - C2S_InputCmd is action-oriented (click edges + selected block authority).
+ * - C2S_PlayerMove carries movement pose updates.
+ */
+#define GAME_INPUT_KEEPALIVE_TICKS 20u
+#define GAME_MOVE_KEEPALIVE_TICKS 20u
+#define GAME_MOVE_POSITION_EPSILON 0.0005f
+#define GAME_MOVE_VELOCITY_EPSILON 0.0010f
+#define GAME_MOVE_ANGLE_EPSILON 0.0005f
 
 /* Build raylib camera vectors from a player pose (position + yaw/pitch). */
 static void set_camera_from_pose(Game *game, Vector3 position, float yaw, float pitch) {
@@ -46,30 +71,37 @@ static void set_camera_from_pose(Game *game, Vector3 position, float yaw, float 
 
 /* Snap camera directly to the player's current simulation pose. */
 static void sync_camera(Game *game) {
-  set_camera_from_pose(game, game->player.position, game->player.yaw, game->player.pitch);
+  float yaw = game->view_initialized ? game->view_yaw : game->player.yaw;
+  float pitch = game->view_initialized ? game->view_pitch : game->player.pitch;
+  set_camera_from_pose(game, game->player.position, yaw, pitch);
 }
 
-/*
- * Interpolate camera pose between previous and current player states.
- * This smooths rendering when simulation runs at a fixed tick rate.
- */
+/* Interpolate position only; keep look immediate from local view yaw/pitch. */
 static void sync_camera_interpolated(Game *game, float alpha) {
+  Vector3 position;
+  float yaw;
+  float pitch;
+
+  if (game == NULL) {
+    return;
+  }
+
   alpha = Clamp(alpha, 0.0f, 1.0f);
-
-  Vector3 position = Vector3Lerp(game->player.previous_position, game->player.position, alpha);
-
-  float yaw = game->player.previous_yaw + (game->player.yaw - game->player.previous_yaw) * alpha;
-  float pitch =
-      game->player.previous_pitch + (game->player.pitch - game->player.previous_pitch) * alpha;
-
+  position = Vector3Lerp(game->player.previous_position, game->player.position, alpha);
+  yaw = game->view_initialized ? game->view_yaw : game->player.yaw;
+  pitch = game->view_initialized ? game->view_pitch : game->player.pitch;
   set_camera_from_pose(game, position, yaw, pitch);
 }
 
 static void set_cursor_locked(Game *game, bool locked) {
+  bool was_locked = game->cursor_locked;
   game->cursor_locked = locked;
 
   if (locked) {
     DisableCursor();
+    if (!was_locked) {
+      game->suppress_next_frame_look = true;
+    }
   } else {
     EnableCursor();
   }
@@ -81,9 +113,6 @@ static void open_debug_menu(Game *game) {
   }
 
   game->show_debug_menu = true;
-  game->lock_before_debug_menu = game->cursor_locked || game->pending_lock_request;
-  game->pending_lock_request = false;
-  set_cursor_locked(game, false);
 }
 
 static void close_debug_menu(Game *game) {
@@ -92,13 +121,6 @@ static void close_debug_menu(Game *game) {
   }
 
   game->show_debug_menu = false;
-  if (game->lock_before_debug_menu) {
-    game->pending_lock_request = true;
-    set_cursor_locked(game, true);
-  } else {
-    game->pending_lock_request = false;
-    set_cursor_locked(game, false);
-  }
 }
 
 static bool game_is_paused(Game *game) { return game->show_escape_menu || game->show_options; }
@@ -136,28 +158,295 @@ static bool game_send_hello(Game *game, int requested_render_distance) {
                                        ? (uint32_t)requested_render_distance
                                        : (uint32_t)DEFAULT_RENDER_DISTANCE,
   };
+  uint32_t sequence;
+  bool sent;
 
   if (game == NULL || game->net == NULL) {
     return false;
   }
 
-  return Net_SendHello(game->net, game->network_sequence++, game->network_tick_counter, &hello);
+  sequence = game->network_sequence++;
+  sent = Net_SendHello(game->net, sequence, game->network_tick_counter, &hello);
+  if (sent) {
+    NetProfiler_RecordSend(NET_MSG_C2S_HELLO, sequence, game->network_tick_counter,
+                           Protocol_HeaderSize() + 4u, 0u, 0u);
+  }
+
+  return sent;
 }
 
-static bool game_send_input(Game *game, const GameInputSnapshot *input, bool gameplay_enabled) {
-  GameplayInputCmd cmd;
+static bool game_send_input(Game *game, const GameplayInputCmd *cmd) {
+  uint32_t sequence;
+  bool sent;
 
-  if (game == NULL || game->net == NULL || !game->connected) {
+  if (game == NULL || cmd == NULL || game->net == NULL || !game->connected ||
+      !game->welcome_received) {
     return false;
   }
 
-  Game_BuildGameplayInputCmd(input, game->network_tick_counter, game->player.selected_block,
-                             gameplay_enabled, &cmd);
+  sequence = game->network_sequence++;
+  sent = Net_SendInputCmd(game->net, sequence, game->network_tick_counter, cmd);
+  if (sent) {
+    NetProfiler_RecordSend(NET_MSG_C2S_INPUT_CMD, sequence, game->network_tick_counter,
+                           Protocol_HeaderSize() + 14u, 1u, cmd->tick_id);
+  }
 
-  return Net_SendInputCmd(game->net, game->network_sequence++, game->network_tick_counter, &cmd);
+  return sent;
 }
 
-static void game_apply_player_state(Game *game, const AuthoritativePlayerState *state) {
+static bool game_send_player_move(Game *game, const NetPlayerMove *move) {
+  uint32_t sequence;
+  bool sent;
+
+  if (game == NULL || move == NULL || game->net == NULL || !game->connected ||
+      !game->welcome_received) {
+    return false;
+  }
+
+  sequence = game->network_sequence++;
+  sent = Net_SendPlayerMove(game->net, sequence, game->network_tick_counter, move);
+  if (sent) {
+    NetProfiler_RecordSend(NET_MSG_C2S_PLAYER_MOVE, sequence, game->network_tick_counter,
+                           Protocol_HeaderSize() + 37u, 1u, move->tick_id);
+  }
+
+  return sent;
+}
+
+static bool game_input_cmd_semantic_equal(const GameplayInputCmd *a, const GameplayInputCmd *b) {
+  uint8_t a_action_buttons;
+  uint8_t b_action_buttons;
+
+  if (a == NULL || b == NULL) {
+    return false;
+  }
+
+  a_action_buttons = a->buttons & (uint8_t)(GAMEPLAY_INPUT_LEFT_CLICK | GAMEPLAY_INPUT_RIGHT_CLICK);
+  b_action_buttons = b->buttons & (uint8_t)(GAMEPLAY_INPUT_LEFT_CLICK | GAMEPLAY_INPUT_RIGHT_CLICK);
+  return a_action_buttons == b_action_buttons && a->selected_block == b->selected_block;
+}
+
+static bool game_should_send_input(const Game *game, const GameplayInputCmd *cmd) {
+  uint32_t ticks_since_last_send;
+
+  if (game == NULL || cmd == NULL) {
+    return false;
+  }
+
+  if (!game->has_last_sent_input_cmd) {
+    return true;
+  }
+
+  /* Action commands are sparse; movement continuity is handled by C2S_PlayerMove. */
+
+  if (!game_input_cmd_semantic_equal(cmd, &game->last_sent_input_cmd)) {
+    return true;
+  }
+
+  ticks_since_last_send = cmd->tick_id - game->last_sent_input_tick_id;
+  return ticks_since_last_send >= GAME_INPUT_KEEPALIVE_TICKS;
+}
+
+static void game_mark_input_sent(Game *game, const GameplayInputCmd *cmd) {
+  if (game == NULL || cmd == NULL) {
+    return;
+  }
+
+  game->last_sent_input_cmd = *cmd;
+  game->last_sent_input_tick_id = cmd->tick_id;
+  game->has_last_sent_input_cmd = true;
+}
+
+static void game_build_player_move(const Game *game, uint32_t tick_id, NetPlayerMove *out_move) {
+  if (game == NULL || out_move == NULL) {
+    return;
+  }
+
+  *out_move = (NetPlayerMove){
+      .tick_id = tick_id,
+      .position_x = game->player.position.x,
+      .position_y = game->player.position.y,
+      .position_z = game->player.position.z,
+      .velocity_x = game->player.velocity.x,
+      .velocity_y = game->player.velocity.y,
+      .velocity_z = game->player.velocity.z,
+      .yaw = game->player.yaw,
+      .pitch = game->player.pitch,
+      .on_ground = game->player.on_ground ? 1u : 0u,
+  };
+}
+
+static bool game_player_move_semantic_equal(const NetPlayerMove *a, const NetPlayerMove *b) {
+  if (a == NULL || b == NULL) {
+    return false;
+  }
+
+  return fabsf(a->position_x - b->position_x) <= GAME_MOVE_POSITION_EPSILON &&
+         fabsf(a->position_y - b->position_y) <= GAME_MOVE_POSITION_EPSILON &&
+         fabsf(a->position_z - b->position_z) <= GAME_MOVE_POSITION_EPSILON &&
+         fabsf(a->velocity_x - b->velocity_x) <= GAME_MOVE_VELOCITY_EPSILON &&
+         fabsf(a->velocity_y - b->velocity_y) <= GAME_MOVE_VELOCITY_EPSILON &&
+         fabsf(a->velocity_z - b->velocity_z) <= GAME_MOVE_VELOCITY_EPSILON &&
+         fabsf(a->yaw - b->yaw) <= GAME_MOVE_ANGLE_EPSILON &&
+         fabsf(a->pitch - b->pitch) <= GAME_MOVE_ANGLE_EPSILON && a->on_ground == b->on_ground;
+}
+
+static bool game_should_send_player_move(const Game *game, const NetPlayerMove *move) {
+  uint32_t ticks_since_last_send;
+
+  if (game == NULL || move == NULL) {
+    return false;
+  }
+
+  if (!game->has_last_sent_move) {
+    return true;
+  }
+
+  if (!game_player_move_semantic_equal(move, &game->last_sent_move)) {
+    return true;
+  }
+
+  ticks_since_last_send = move->tick_id - game->last_sent_move_tick_id;
+  return ticks_since_last_send >= GAME_MOVE_KEEPALIVE_TICKS;
+}
+
+static void game_mark_player_move_sent(Game *game, const NetPlayerMove *move) {
+  if (game == NULL || move == NULL) {
+    return;
+  }
+
+  game->last_sent_move = *move;
+  game->last_sent_move_tick_id = move->tick_id;
+  game->has_last_sent_move = true;
+}
+
+static float game_network_tick_dt(const Game *game) {
+  int rate;
+  if (game == NULL) {
+    return 1.0f / (float)GAME_TICK_RATE;
+  }
+
+  rate = (game->network_tick_rate > 0) ? game->network_tick_rate : (int)GAME_TICK_RATE;
+  return 1.0f / (float)rate;
+}
+
+static void game_reset_prediction_history(Game *game) {
+  if (game == NULL) {
+    return;
+  }
+  memset(game->prediction_history, 0, sizeof(game->prediction_history));
+  memset(game->input_history, 0, sizeof(game->input_history));
+}
+
+static PredictedPlayerSample *game_prediction_slot(Game *game, uint32_t tick_id) {
+  if (game == NULL) {
+    return NULL;
+  }
+  return &game->prediction_history[tick_id % GAME_PREDICTION_HISTORY_SIZE];
+}
+
+static const PredictedPlayerSample *game_prediction_find(const Game *game, uint32_t tick_id) {
+  const PredictedPlayerSample *slot;
+  if (game == NULL) {
+    return NULL;
+  }
+
+  slot = &game->prediction_history[tick_id % GAME_PREDICTION_HISTORY_SIZE];
+  if (!slot->valid || slot->tick_id != tick_id) {
+    return NULL;
+  }
+
+  return slot;
+}
+
+static GameplayInputHistoryEntry *game_input_slot(Game *game, uint32_t tick_id) {
+  if (game == NULL) {
+    return NULL;
+  }
+
+  return &game->input_history[tick_id % GAME_INPUT_HISTORY_SIZE];
+}
+
+static void game_store_input_cmd(Game *game, const GameplayInputCmd *cmd) {
+  GameplayInputHistoryEntry *slot;
+
+  if (game == NULL || cmd == NULL) {
+    return;
+  }
+
+  slot = game_input_slot(game, cmd->tick_id);
+  if (slot == NULL) {
+    return;
+  }
+
+  slot->tick_id = cmd->tick_id;
+  slot->cmd = *cmd;
+  slot->valid = true;
+}
+
+static const GameplayInputCmd *game_find_input_cmd(const Game *game, uint32_t tick_id) {
+  const GameplayInputHistoryEntry *slot;
+
+  if (game == NULL) {
+    return NULL;
+  }
+
+  slot = &game->input_history[tick_id % GAME_INPUT_HISTORY_SIZE];
+  if (!slot->valid || slot->tick_id != tick_id) {
+    return NULL;
+  }
+
+  return &slot->cmd;
+}
+
+static void game_store_prediction_sample(Game *game, uint32_t tick_id) {
+  PredictedPlayerSample *slot = game_prediction_slot(game, tick_id);
+  if (slot == NULL) {
+    return;
+  }
+
+  *slot = (PredictedPlayerSample){
+      .tick_id = tick_id,
+      .position = game->player.position,
+      .velocity = game->player.velocity,
+      .on_ground = game->player.on_ground,
+      .valid = true,
+  };
+}
+
+static void game_apply_simulation_cmd(Game *game, const GameplayInputCmd *cmd, float tick_dt,
+                                      bool store_prediction) {
+  GameInputSnapshot sim = {0};
+
+  if (game == NULL || cmd == NULL || tick_dt <= 0.0f) {
+    return;
+  }
+
+  sim.move_forward = (cmd->buttons & GAMEPLAY_INPUT_MOVE_FORWARD) != 0;
+  sim.move_backward = (cmd->buttons & GAMEPLAY_INPUT_MOVE_BACKWARD) != 0;
+  sim.move_left = (cmd->buttons & GAMEPLAY_INPUT_MOVE_LEFT) != 0;
+  sim.move_right = (cmd->buttons & GAMEPLAY_INPUT_MOVE_RIGHT) != 0;
+  sim.sprint = (cmd->buttons & GAMEPLAY_INPUT_SPRINT) != 0;
+  sim.jump_held = (cmd->buttons & GAMEPLAY_INPUT_JUMP_HELD) != 0;
+  sim.mouse_delta = (Vector2){cmd->look_delta_x, cmd->look_delta_y};
+
+  game->player.selected_block = cmd->selected_block;
+  Player_Update(&game->player, &game->world, &sim, tick_dt, true);
+  if (store_prediction) {
+    game_store_prediction_sample(game, cmd->tick_id);
+  }
+}
+
+static void game_predict_local_player(Game *game, const GameplayInputCmd *cmd, float tick_dt) {
+  if (game == NULL || cmd == NULL || !game->connected || !game->welcome_received) {
+    return;
+  }
+
+  game_apply_simulation_cmd(game, cmd, tick_dt, true);
+}
+
+static void game_apply_authoritative_state(Game *game, const AuthoritativePlayerState *state,
+                                           bool sync_orientation) {
   if (game == NULL || state == NULL) {
     return;
   }
@@ -168,15 +457,122 @@ static void game_apply_player_state(Game *game, const AuthoritativePlayerState *
 
   game->player.position = (Vector3){state->position_x, state->position_y, state->position_z};
   game->player.velocity = (Vector3){state->velocity_x, state->velocity_y, state->velocity_z};
-  game->player.yaw = state->yaw;
-  game->player.pitch = state->pitch;
+  if (sync_orientation) {
+    game->player.yaw = state->yaw;
+    game->player.pitch = state->pitch;
+  }
   game->player.on_ground = state->on_ground != 0;
+
+  game->last_authoritative_tick = state->input_tick_id;
+  game->has_authoritative_state = true;
+
+  if (!game->view_initialized) {
+    game->view_yaw = state->yaw;
+    game->view_pitch = state->pitch;
+    game->view_initialized = true;
+  }
 
   World_SetTime(&game->world, state->world_time);
 }
 
+static void game_replay_unacked_inputs(Game *game, uint32_t acknowledged_input_tick) {
+  uint32_t replay_tick;
+  uint32_t stop_tick;
+  float tick_dt;
+
+  if (game == NULL) {
+    return;
+  }
+
+  tick_dt = game_network_tick_dt(game);
+  replay_tick = acknowledged_input_tick + 1u;
+  stop_tick = game->network_tick_counter;
+
+  while (replay_tick < stop_tick) {
+    const GameplayInputCmd *cmd = game_find_input_cmd(game, replay_tick);
+    if (cmd != NULL) {
+      game_apply_simulation_cmd(game, cmd, tick_dt, true);
+    }
+    replay_tick++;
+  }
+}
+
+static void game_reconcile_player_state(Game *game, const AuthoritativePlayerState *state) {
+  uint32_t acknowledged_input_tick;
+  const PredictedPlayerSample *predicted;
+  Vector3 authoritative_pos;
+  Vector3 predicted_pos;
+  Vector3 delta;
+  float horizontal_error;
+  float vertical_error;
+  float distance_sq;
+
+  if (game == NULL || state == NULL) {
+    return;
+  }
+
+  acknowledged_input_tick = state->input_tick_id;
+  if (game->has_authoritative_state) {
+    if (acknowledged_input_tick < game->last_authoritative_tick) {
+      return;
+    }
+    if (acknowledged_input_tick == game->last_authoritative_tick) {
+      /*
+       * Do not re-correct against the same ack repeatedly.
+       * This is a common source of visible side-to-side micro jitter.
+       */
+      game->player.velocity = (Vector3){state->velocity_x, state->velocity_y, state->velocity_z};
+      game->player.on_ground = state->on_ground != 0;
+      World_SetTime(&game->world, state->world_time);
+      return;
+    }
+  }
+
+  authoritative_pos = (Vector3){state->position_x, state->position_y, state->position_z};
+  if (!game->has_authoritative_state) {
+    game_apply_authoritative_state(game, state, true);
+    game_replay_unacked_inputs(game, acknowledged_input_tick);
+    return;
+  }
+
+  predicted = game_prediction_find(game, acknowledged_input_tick);
+  if (predicted == NULL) {
+    /* Missing history fallback: authoritative reset + replay from ack. */
+    game_apply_authoritative_state(game, state, false);
+    game_replay_unacked_inputs(game, acknowledged_input_tick);
+    return;
+  }
+
+  predicted_pos = predicted->position;
+  delta = Vector3Subtract(authoritative_pos, predicted_pos);
+  horizontal_error = sqrtf(delta.x * delta.x + delta.z * delta.z);
+  vertical_error = fabsf(delta.y);
+  distance_sq = Vector3LengthSqr(delta);
+
+  if (horizontal_error <= GAME_RECONCILE_IGNORE_HORIZONTAL &&
+      vertical_error <= GAME_RECONCILE_IGNORE_VERTICAL) {
+    game->last_authoritative_tick = acknowledged_input_tick;
+    game->has_authoritative_state = true;
+    game->player.velocity = (Vector3){state->velocity_x, state->velocity_y, state->velocity_z};
+    game->player.on_ground = state->on_ground != 0;
+    World_SetTime(&game->world, state->world_time);
+    return;
+  }
+
+  if (distance_sq >= (GAME_RECONCILE_SNAP_DISTANCE * GAME_RECONCILE_SNAP_DISTANCE)) {
+    game_apply_authoritative_state(game, state, false);
+    game_replay_unacked_inputs(game, acknowledged_input_tick);
+    return;
+  }
+
+  game_apply_authoritative_state(game, state, false);
+  game_replay_unacked_inputs(game, acknowledged_input_tick);
+}
+
 static void game_process_network(Game *game) {
   NetEvent event;
+  AuthoritativePlayerState latest_player_state = {0};
+  bool has_latest_player_state = false;
 
   if (game == NULL || game->net == NULL) {
     return;
@@ -187,15 +583,40 @@ static void game_process_network(Game *game) {
   while (Net_PollEvent(game->net, &event)) {
     if (event.type == NET_EVENT_CONNECTED) {
       game->connected = true;
+      game->has_last_sent_move = false;
+      game->last_sent_move_tick_id = 0u;
+      game->has_last_sent_input_cmd = false;
+      game->last_sent_input_tick_id = 0u;
       game_send_hello(game, game->world.render_distance);
     } else if (event.type == NET_EVENT_DISCONNECTED) {
       game->connected = false;
       game->welcome_received = false;
+      game->has_authoritative_state = false;
+      game->last_authoritative_tick = 0;
+      game->has_last_sent_move = false;
+      game->last_sent_move_tick_id = 0u;
+      game->has_last_sent_input_cmd = false;
+      game->last_sent_input_tick_id = 0u;
+      game_reset_prediction_history(game);
     } else if (event.type == NET_EVENT_MESSAGE) {
+      uint32_t confirm_ref = 0u;
+      if (event.message_type == NET_MSG_S2C_PLAYER_STATE) {
+        confirm_ref = event.payload.player_state.input_tick_id;
+      }
+      NetProfiler_RecordReceive(event.message_type, event.header.sequence, event.header.tick,
+                                event.packet_size, event.channel, confirm_ref);
+
       switch (event.message_type) {
       case NET_MSG_S2C_WELCOME:
         game->welcome_received = true;
         game->connected = true;
+        game->has_authoritative_state = false;
+        game->last_authoritative_tick = 0;
+        game->has_last_sent_move = false;
+        game->last_sent_move_tick_id = 0u;
+        game->has_last_sent_input_cmd = false;
+        game->last_sent_input_tick_id = 0u;
+        game_reset_prediction_history(game);
         game->seed = event.payload.welcome.seed;
         game->network_tick_rate = (event.payload.welcome.tick_rate > 0)
                                       ? event.payload.welcome.tick_rate
@@ -206,7 +627,18 @@ static void game_process_network(Game *game) {
         break;
 
       case NET_MSG_S2C_PLAYER_STATE:
-        game_apply_player_state(game, &event.payload.player_state);
+        /*
+         * When chunk streaming stalls the server thread, multiple snapshots can
+         * arrive in one client tick. Apply only the newest to avoid visible
+         * micro-corrections (especially vertical "step" jitter).
+         */
+        if (!has_latest_player_state ||
+            event.payload.player_state.input_tick_id > latest_player_state.input_tick_id ||
+            (event.payload.player_state.input_tick_id == latest_player_state.input_tick_id &&
+             event.payload.player_state.tick_id >= latest_player_state.tick_id)) {
+          latest_player_state = event.payload.player_state;
+          has_latest_player_state = true;
+        }
         break;
 
       case NET_MSG_S2C_CHUNK_DATA:
@@ -238,11 +670,14 @@ static void game_process_network(Game *game) {
       }
     }
   }
+
+  if (has_latest_player_state) {
+    game_reconcile_player_state(game, &latest_player_state);
+  }
 }
 
 static void game_draw_target_block_highlight(Game *game, const Camera3D *camera) {
-  if (game == NULL || camera == NULL || !game->cursor_locked || game->show_debug_menu ||
-      game_is_paused(game)) {
+  if (game == NULL || camera == NULL || !game->cursor_locked || game_is_paused(game)) {
     return;
   }
 
@@ -294,6 +729,7 @@ static void game_draw_debug_ui(Game *game) {
       igMenuItem_BoolPtr("Profiler Statistics", NULL, &game->show_profiler_stats, true);
       igMenuItem_BoolPtr("Frame Time Graph", NULL, &game->show_frame_graph, true);
       igMenuItem_BoolPtr("System Telemetry", NULL, &game->show_telemetry, true);
+      igMenuItem_BoolPtr("Network Profiler", NULL, &game->show_net_profiler, true);
       igSeparator();
       if (igMenuItem_Bool("Close Debug Menu", NULL, false, true)) {
         close_debug_menu(game);
@@ -311,6 +747,9 @@ static void game_draw_debug_ui(Game *game) {
   }
   if (game->show_telemetry) {
     Telemetry_DrawWindow();
+  }
+  if (game->show_net_profiler) {
+    NetProfiler_DrawWindow();
   }
 
   rligEnd();
@@ -338,10 +777,13 @@ bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connec
   game->network_tick_rate = (int)GAME_TICK_RATE;
   game->network_tick_counter = 1;
   game->network_sequence = 1;
+  game->has_last_sent_move = false;
+  game->last_sent_move_tick_id = 0u;
+  game->has_last_sent_input_cmd = false;
+  game->last_sent_input_tick_id = 0u;
   game->remote_mode = (connect_host != NULL && connect_host[0] != '\0');
   game->cursor_locked = true;
   game->pending_lock_request = true;
-  game->lock_before_debug_menu = true;
 
   game->show_escape_menu = false;
   game->show_options = false;
@@ -353,6 +795,8 @@ bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connec
   game->show_profiler_stats = false;
   game->show_frame_graph = false;
   game->show_telemetry = false;
+  game->show_net_profiler = false;
+  game->suppress_next_frame_look = false;
 
   Profiler_Init();
   game->profiler_initialized = true;
@@ -362,6 +806,7 @@ bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connec
   game->profiler_renderer_initialized = true;
   Telemetry_Init();
   game->telemetry_initialized = true;
+  NetProfiler_Init();
 
   rligSetup(true);
   game->imgui_initialized = true;
@@ -441,6 +886,9 @@ bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connec
   int spawn_y = World_GetTopY(&game->world, 0, 0);
   Vector3 spawn = {0.5f, (float)spawn_y + 2.0f, 0.5f};
   Player_Init(&game->player, spawn);
+  game->view_yaw = game->player.yaw;
+  game->view_pitch = game->player.pitch;
+  game->view_initialized = true;
 
   game->camera = (Camera3D){
       .position = Player_GetEyePosition(&game->player),
@@ -531,6 +979,7 @@ void Game_Shutdown(Game *game) {
     Telemetry_Shutdown();
     game->telemetry_initialized = false;
   }
+  NetProfiler_Shutdown();
 
   if (game->imgui_initialized) {
     rligShutdown();
@@ -548,10 +997,6 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
   }
 
   Profiler_BeginSection("Update");
-
-  bool left_click_pressed = input->left_click_pressed;
-  bool right_click_pressed = input->right_click_pressed;
-  bool consumed_relock_click = false;
 
   if (input->debug_menu_pressed) {
     if (game->show_debug_menu) {
@@ -574,45 +1019,51 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
     }
   }
 
-  if (!game->show_debug_menu && !game_is_paused(game) && !game->cursor_locked &&
-      left_click_pressed) {
-    game->pending_lock_request = true;
-    set_cursor_locked(game, true);
-    consumed_relock_click = true;
+  if (input->cursor_lock_toggle_pressed) {
+    game->pending_lock_request = false;
+    set_cursor_locked(game, !game->cursor_locked);
   }
 
-  if (!game->show_debug_menu && !game_is_paused(game) && game->cursor_locked &&
-      !IsWindowFocused()) {
+  if (!game_is_paused(game) && game->cursor_locked && !IsWindowFocused()) {
     game->pending_lock_request = true;
   }
 
-  bool click_retrying_lock = !game->show_debug_menu && !game_is_paused(game) &&
-                             game->pending_lock_request &&
-                             (left_click_pressed || right_click_pressed);
-  if (click_retrying_lock) {
-    consumed_relock_click = true;
-  }
-
-  if (game->pending_lock_request && !game->show_debug_menu && !game_is_paused(game)) {
-    if (IsWindowFocused() || click_retrying_lock) {
-      set_cursor_locked(game, true);
-    }
-
+  if (game->pending_lock_request && !game_is_paused(game)) {
     if (IsWindowFocused()) {
+      set_cursor_locked(game, true);
       game->pending_lock_request = false;
     }
   }
 
-  float hotbar_scroll = (!game->show_debug_menu && !game_is_paused(game) && game->cursor_locked)
-                            ? input->mouse_wheel_delta
-                            : 0.0f;
+  float hotbar_scroll =
+      (!game_is_paused(game) && game->cursor_locked) ? input->mouse_wheel_delta : 0.0f;
+  GameplayInputCmd gameplay_cmd = {0};
+  NetPlayerMove player_move = {0};
+  bool gameplay_enabled = (!game_is_paused(game) && game->cursor_locked);
   Player_ApplyHotbarScroll(&game->player, hotbar_scroll);
 
   Profiler_BeginSection("Network");
   game_process_network(game);
-  bool gameplay_enabled = (!game->show_debug_menu && !game_is_paused(game) && game->cursor_locked &&
-                           !consumed_relock_click);
-  game_send_input(game, input, gameplay_enabled);
+
+  Game_BuildGameplayInputCmd(input, game->network_tick_counter, game->player.selected_block,
+                             gameplay_enabled, &gameplay_cmd);
+  if (game->welcome_received) {
+    bool should_send_input;
+    bool should_send_move;
+    game_store_input_cmd(game, &gameplay_cmd);
+    should_send_input = game_should_send_input(game, &gameplay_cmd);
+    if (should_send_input && game_send_input(game, &gameplay_cmd)) {
+      game_mark_input_sent(game, &gameplay_cmd);
+    }
+    game_predict_local_player(game, &gameplay_cmd, tick_dt);
+
+    game_build_player_move(game, gameplay_cmd.tick_id, &player_move);
+    should_send_move = game_should_send_player_move(game, &player_move);
+    if (should_send_move && game_send_player_move(game, &player_move)) {
+      game_mark_player_move_sent(game, &player_move);
+    }
+  }
+
   game->network_tick_counter++;
   Profiler_EndSection();
 
@@ -623,6 +1074,41 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
   Clouds_Update(&game->clouds, tick_dt);
 
   Profiler_EndSection();
+}
+
+void Game_ApplyFrameLook(Game *game, GameInputSnapshot *frame_input) {
+  float dx;
+  float dy;
+
+  if (game == NULL || frame_input == NULL) {
+    return;
+  }
+
+  if (game_is_paused(game) || !game->cursor_locked || !IsWindowFocused()) {
+    frame_input->mouse_delta = (Vector2){0};
+    return;
+  }
+
+  if (game->suppress_next_frame_look) {
+    game->suppress_next_frame_look = false;
+    frame_input->mouse_delta = (Vector2){0};
+    return;
+  }
+
+  dx = frame_input->mouse_delta.x;
+  dy = frame_input->mouse_delta.y;
+
+  /* Guard against occasional cursor re-lock/focus spikes. */
+  if (!isfinite(dx) || !isfinite(dy) || fabsf(dx) > GAME_LOOK_SPIKE_LIMIT ||
+      fabsf(dy) > GAME_LOOK_SPIKE_LIMIT) {
+    frame_input->mouse_delta = (Vector2){0};
+    return;
+  }
+
+  game->view_yaw -= dx * GAME_VIEW_MOUSE_SENSITIVITY;
+  game->view_pitch -= dy * GAME_VIEW_MOUSE_SENSITIVITY;
+  game->view_pitch = Clamp(game->view_pitch, -GAME_VIEW_PITCH_LIMIT, GAME_VIEW_PITCH_LIMIT);
+  game->view_initialized = true;
 }
 
 void Game_Draw(Game *game, float alpha) {

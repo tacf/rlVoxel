@@ -1,8 +1,10 @@
 #include "game/game_input.h"
 
 #include <raymath.h>
+#include <stdint.h>
 #include <string.h>
 
+#include "net/protocol.h"
 #include "raylib.h"
 
 void Game_CaptureFrameInput(GameInputSnapshot *input) {
@@ -19,6 +21,7 @@ void Game_CaptureFrameInput(GameInputSnapshot *input) {
       .jump_held = IsKeyDown(KEY_SPACE),
       .escape_pressed = IsKeyPressed(KEY_ESCAPE),
       .debug_menu_pressed = IsKeyPressed(KEY_F11),
+      .cursor_lock_toggle_pressed = IsKeyPressed(KEY_LEFT_ALT) || IsKeyPressed(KEY_RIGHT_ALT),
       .left_click_pressed = IsMouseButtonPressed(MOUSE_BUTTON_LEFT),
       .right_click_pressed = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT),
       .mouse_wheel_delta = GetMouseWheelMove(),
@@ -40,6 +43,8 @@ void Game_MergeFrameInput(GameInputSnapshot *pending, const GameInputSnapshot *f
 
   pending->escape_pressed = pending->escape_pressed || frame->escape_pressed;
   pending->debug_menu_pressed = pending->debug_menu_pressed || frame->debug_menu_pressed;
+  pending->cursor_lock_toggle_pressed =
+      pending->cursor_lock_toggle_pressed || frame->cursor_lock_toggle_pressed;
   pending->left_click_pressed = pending->left_click_pressed || frame->left_click_pressed;
   pending->right_click_pressed = pending->right_click_pressed || frame->right_click_pressed;
   pending->mouse_wheel_delta += frame->mouse_wheel_delta;
@@ -53,6 +58,7 @@ void Game_ClearTickEdgeInput(GameInputSnapshot *input) {
 
   input->escape_pressed = false;
   input->debug_menu_pressed = false;
+  input->cursor_lock_toggle_pressed = false;
   input->left_click_pressed = false;
   input->right_click_pressed = false;
   input->mouse_wheel_delta = 0.0f;

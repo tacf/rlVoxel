@@ -51,10 +51,13 @@ typedef struct NetEvent {
   int peer_id;
   NetMessageHeader header;
   NetMessageType message_type;
+  uint8_t channel;
+  size_t packet_size;
   union {
     NetHello hello;
     NetWelcome welcome;
     GameplayInputCmd input_cmd;
+    NetPlayerMove player_move;
     AuthoritativePlayerState player_state;
     NetChunkDataOwned chunk_data;
     NetBlockDelta block_delta;
@@ -90,7 +93,7 @@ bool Net_CreateLocalPair(NetEndpoint **out_client, NetEndpoint **out_server);
 /**
  * Services network I/O for this endpoint.
  * timeout_ms behaves like ENet service timeout for remote mode.
- * Call once per frame/tick before polling events.
+ * Typical loop order: Net_Update(...) then drain Net_PollEvent(...).
  */
 void Net_Update(NetEndpoint *endpoint, uint32_t timeout_ms);
 
@@ -98,6 +101,9 @@ void Net_Update(NetEndpoint *endpoint, uint32_t timeout_ms);
  * Polls the next high-level event for this endpoint.
  * Returns false when no pending event exists.
  * Unknown or invalid packets are dropped internally and not emitted.
+ *
+ * For NET_EVENT_MESSAGE events, payload ownership stays inside NetEvent.
+ * Copy payload fields if you need to retain data after next poll call.
  */
 bool Net_PollEvent(NetEndpoint *endpoint, NetEvent *out_event);
 
@@ -111,12 +117,19 @@ bool Net_SendPacket(NetEndpoint *endpoint, const uint8_t *data, size_t size, uin
 /**
  * Typed protocol sends with built-in v1 channel/reliability routing.
  * peer_id is currently implicit (v1 single client), so helpers route to peer 0.
+ *
+ * Movement model:
+ * - Net_SendPlayerMove: high-rate movement snapshots.
+ * - Net_SendInputCmd: action/selection command stream.
+ * - Net_SendPlayerState: server correction/periodic sync snapshots.
  */
 bool Net_SendHello(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick, const NetHello *hello);
 bool Net_SendWelcome(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
                      const NetWelcome *welcome);
 bool Net_SendInputCmd(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
                       const GameplayInputCmd *input_cmd);
+bool Net_SendPlayerMove(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
+                        const NetPlayerMove *player_move);
 bool Net_SendPlayerState(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
                          const AuthoritativePlayerState *player_state);
 bool Net_SendChunkData(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,

@@ -657,8 +657,20 @@ void World_Update(World *world, Vector3 player_pos, float dt) {
   }
 
   if (world->meshing_enabled) {
+    int rebuild_budget = 0;
     Profiler_BeginSection("ChunkMeshing");
-    int rebuild_budget = 4;
+    /*
+     * Client-replicated worlds avoid bursty remesh work while streaming chunks.
+     * We only permit one remesh every other simulation tick.
+     */
+    if (world->authoritative_mode) {
+      rebuild_budget = 4;
+    } else if (world->replicated_mesh_skip_ticks > 0) {
+      world->replicated_mesh_skip_ticks--;
+    } else {
+      rebuild_budget = 1;
+      world->replicated_mesh_skip_ticks = 1;
+    }
     int rebuilt = 0;
     while (rebuild_budget > 0 && world->dirty_chunk_read_index < arrlen(world->dirty_chunk_keys)) {
       int64_t key = world->dirty_chunk_keys[world->dirty_chunk_read_index++];

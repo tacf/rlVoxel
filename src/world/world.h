@@ -59,6 +59,9 @@ typedef struct World {
 
   /** True when this world runs meshing and supports draw passes. */
   bool meshing_enabled;
+
+  /** Client-only remesh throttle state (0 = allow remesh this tick). */
+  uint8_t replicated_mesh_skip_ticks;
 } World;
 
 /**

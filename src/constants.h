@@ -39,14 +39,14 @@
 #define PLAYER_TICK_MOVE_AIR 0.02f
 #define PLAYER_TICK_MOVE_LIQUID 0.02f
 
-/** Tick-based jump/fall model (minecraftc-like) */
+/** Tick-based jump/fall model */
 #define PLAYER_TICK_JUMP_IMPULSE 0.42f
 #define PLAYER_TICK_AIR_GRAVITY 0.08f
 #define PLAYER_TICK_AIR_DRAG 0.98f
 #define PLAYER_TICK_XZ_DRAG 0.91f
 #define PLAYER_TICK_GROUND_DRAG 0.60f
 
-/** Tick-based liquid model (minecraftc-like) */
+/** Tick-based liquid model */
 #define PLAYER_TICK_WATER_DRAG 0.80f
 #define PLAYER_TICK_LAVA_DRAG 0.50f
 #define PLAYER_TICK_LIQUID_GRAVITY 0.02f
