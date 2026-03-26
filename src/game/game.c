@@ -57,6 +57,7 @@
 #define GAME_BREAK_DAMAGE_PER_HIT 1.0f
 #define GAME_BREAK_RECOVERY_DELAY_TICKS 10u
 #define GAME_BREAK_RECOVERY_INTERVAL_TICKS 5u
+#define GAME_BREAK_ACK_TIMEOUT_TICKS 20u
 
 /* Build raylib camera vectors from a player pose (position + yaw/pitch). */
 static void set_camera_from_pose(Game *game, Vector3 position, float yaw, float pitch) {
@@ -139,6 +140,154 @@ static void game_decay_break_visual(Game *game) {
   if (game->break_visual_damage <= 0.0f) {
     game_reset_break_visual(game);
   }
+}
+
+static PendingBreakOp *game_find_pending_break(Game *game, int x, int y, int z) {
+  size_t i;
+
+  if (game == NULL) {
+    return NULL;
+  }
+
+  for (i = 0; i < GAME_PENDING_BREAK_OPS_MAX; i++) {
+    PendingBreakOp *op = &game->pending_break_ops[i];
+    if (!op->active) {
+      continue;
+    }
+    if (op->x == x && op->y == y && op->z == z) {
+      return op;
+    }
+  }
+
+  return NULL;
+}
+
+static PendingBreakOp *game_alloc_pending_break(Game *game) {
+  size_t i;
+
+  if (game == NULL) {
+    return NULL;
+  }
+
+  for (i = 0; i < GAME_PENDING_BREAK_OPS_MAX; i++) {
+    PendingBreakOp *op = &game->pending_break_ops[i];
+    if (!op->active) {
+      return op;
+    }
+  }
+
+  /*
+   * Saturation fallback: reuse the oldest tracked entry so optimistic
+   * confirmation keeps moving forward under bursty local edits.
+   */
+  {
+    PendingBreakOp *oldest = &game->pending_break_ops[0];
+    for (i = 1; i < GAME_PENDING_BREAK_OPS_MAX; i++) {
+      PendingBreakOp *candidate = &game->pending_break_ops[i];
+      if (candidate->sent_tick < oldest->sent_tick) {
+        oldest = candidate;
+      }
+    }
+    return oldest;
+  }
+}
+
+static void game_clear_pending_break(PendingBreakOp *op) {
+  if (op == NULL) {
+    return;
+  }
+  memset(op, 0, sizeof(*op));
+}
+
+static void game_track_optimistic_break(Game *game, int x, int y, int z, uint32_t sent_tick) {
+  PendingBreakOp *op;
+  uint8_t previous_block_id;
+  int previous_skylight;
+  bool applied;
+
+  if (game == NULL) {
+    return;
+  }
+
+  previous_block_id = World_GetBlock(&game->world, x, y, z);
+  if (previous_block_id == BLOCK_AIR || previous_block_id == BLOCK_BEDROCK) {
+    return;
+  }
+
+  previous_skylight = World_GetSkyLight(&game->world, x, y, z);
+  if (previous_skylight < 0) {
+    previous_skylight = 0;
+  } else if (previous_skylight > 15) {
+    previous_skylight = 15;
+  }
+
+  applied = World_ApplyBlockDelta(&game->world, x, y, z, BLOCK_AIR, (uint8_t)previous_skylight);
+  if (!applied) {
+    return;
+  }
+
+  op = game_find_pending_break(game, x, y, z);
+  if (op == NULL) {
+    op = game_alloc_pending_break(game);
+  }
+  if (op == NULL) {
+    return;
+  }
+
+  *op = (PendingBreakOp){
+      .x = x,
+      .y = y,
+      .z = z,
+      .previous_block_id = previous_block_id,
+      .previous_skylight = (uint8_t)previous_skylight,
+      .sent_tick = sent_tick,
+      .active = true,
+  };
+}
+
+static void game_ack_pending_break(Game *game, int x, int y, int z) {
+  PendingBreakOp *op;
+
+  if (game == NULL) {
+    return;
+  }
+
+  op = game_find_pending_break(game, x, y, z);
+  if (op != NULL) {
+    game_clear_pending_break(op);
+  }
+}
+
+static void game_update_pending_break_timeouts(Game *game) {
+  size_t i;
+
+  if (game == NULL) {
+    return;
+  }
+
+  for (i = 0; i < GAME_PENDING_BREAK_OPS_MAX; i++) {
+    PendingBreakOp *op = &game->pending_break_ops[i];
+    uint32_t elapsed;
+    if (!op->active) {
+      continue;
+    }
+
+    elapsed = game->network_tick_counter - op->sent_tick;
+    if (elapsed < GAME_BREAK_ACK_TIMEOUT_TICKS) {
+      continue;
+    }
+
+    World_ApplyBlockDelta(&game->world, op->x, op->y, op->z, op->previous_block_id,
+                          op->previous_skylight);
+    game_clear_pending_break(op);
+  }
+}
+
+static void game_clear_pending_breaks(Game *game) {
+  if (game == NULL) {
+    return;
+  }
+  memset(game->pending_break_ops, 0, sizeof(game->pending_break_ops));
 }
 
 static void set_cursor_locked(Game *game, bool locked) {
@@ -654,6 +803,7 @@ static void game_process_network(Game *game) {
       game->has_last_sent_input_cmd = false;
       game->last_sent_input_tick_id = 0u;
       game->last_survival_break_send_tick = 0u;
+      game_clear_pending_breaks(game);
       game_send_hello(game, game->world.render_distance);
     } else if (event.type == NET_EVENT_DISCONNECTED) {
       game->connected = false;
@@ -666,6 +816,7 @@ static void game_process_network(Game *game) {
       game->last_sent_input_tick_id = 0u;
       game->last_survival_break_send_tick = 0u;
       game_reset_prediction_history(game);
+      game_clear_pending_breaks(game);
     } else if (event.type == NET_EVENT_MESSAGE) {
       uint32_t confirm_ref = 0u;
       if (event.message_type == NET_MSG_S2C_PLAYER_STATE) {
@@ -686,6 +837,7 @@ static void game_process_network(Game *game) {
         game->last_sent_input_tick_id = 0u;
         game->last_survival_break_send_tick = 0u;
         game_reset_prediction_history(game);
+        game_clear_pending_breaks(game);
         game->seed = event.payload.welcome.seed;
         game->network_tick_rate = (event.payload.welcome.tick_rate > 0)
                                       ? event.payload.welcome.tick_rate
@@ -719,6 +871,10 @@ static void game_process_network(Game *game) {
         break;
 
       case NET_MSG_S2C_BLOCK_DELTA:
+        if (event.payload.block_delta.block_id == BLOCK_AIR) {
+          game_ack_pending_break(game, event.payload.block_delta.x, event.payload.block_delta.y,
+                                 event.payload.block_delta.z);
+        }
         World_ApplyBlockDelta(&game->world, event.payload.block_delta.x,
                               event.payload.block_delta.y, event.payload.block_delta.z,
                               event.payload.block_delta.block_id,
@@ -782,21 +938,21 @@ static bool game_raycast_target_block(const Game *game, VoxelRaycastHit *out_hit
          out_hit->hit;
 }
 
-static void game_register_break_hit(Game *game, const VoxelRaycastHit *hit) {
+static bool game_register_break_hit(Game *game, const VoxelRaycastHit *hit) {
   int durability;
 
   if (game == NULL || hit == NULL || !hit->hit) {
-    return;
+    return false;
   }
   if (hit->block_id == BLOCK_BEDROCK) {
     game_reset_break_visual(game);
-    return;
+    return false;
   }
 
   durability = Block_GetDurability(hit->block_id);
   if (durability <= 0) {
     game_reset_break_visual(game);
-    return;
+    return false;
   }
 
   if (!game->break_visual_active || game->break_visual_x != hit->block_x ||
@@ -813,7 +969,9 @@ static void game_register_break_hit(Game *game, const VoxelRaycastHit *hit) {
   game->break_visual_last_tick = game->network_tick_counter;
   if (game->break_visual_damage >= (float)durability) {
     game_reset_break_visual(game);
+    return true;
   }
+  return false;
 }
 
 static int game_break_visual_stage(const Game *game) {
@@ -1249,11 +1407,14 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
   GameplayInputCmd gameplay_cmd = {0};
   NetPlayerMove player_move = {0};
   bool force_break_pulse = false;
+  bool optimistic_break_commit = false;
+  VoxelRaycastHit optimistic_break_hit = {0};
   bool gameplay_enabled = (!game_is_paused(game) && game->cursor_locked);
   Player_ApplyHotbarScroll(&game->player, hotbar_scroll);
 
   Profiler_BeginSection("Network");
   game_process_network(game);
+  game_update_pending_break_timeouts(game);
 
   Game_BuildGameplayInputCmd(input, game->network_tick_counter, game->player.selected_block,
                              game->gameplay_mode, game->fly_enabled, gameplay_enabled,
@@ -1273,7 +1434,10 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
   if (force_break_pulse) {
     VoxelRaycastHit hit = {0};
     if (game_raycast_target_block(game, &hit)) {
-      game_register_break_hit(game, &hit);
+      optimistic_break_commit = game_register_break_hit(game, &hit);
+      if (optimistic_break_commit) {
+        optimistic_break_hit = hit;
+      }
     }
   }
 
@@ -1286,6 +1450,10 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
       game_mark_input_sent(game, &gameplay_cmd);
       if (force_break_pulse) {
         game->last_survival_break_send_tick = gameplay_cmd.tick_id;
+      }
+      if (optimistic_break_commit) {
+        game_track_optimistic_break(game, optimistic_break_hit.block_x, optimistic_break_hit.block_y,
+                                    optimistic_break_hit.block_z, gameplay_cmd.tick_id);
       }
     }
     game_predict_local_player(game, &gameplay_cmd, tick_dt);

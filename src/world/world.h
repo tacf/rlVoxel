@@ -32,14 +32,18 @@ typedef struct World {
   /** Queue for pending lighting updates */
   LightUpdateQueue *light_queue_ptr;
 
-  /** FIFO of dirty chunk keys pending remesh processing */
+  /** FIFO of normal-priority dirty chunk keys pending remesh processing */
   int64_t *dirty_chunk_keys;
   ptrdiff_t dirty_chunk_read_index;
+
+  /** FIFO of high-priority dirty chunk keys (processed before normal queue). */
+  int64_t *dirty_chunk_priority_keys;
+  ptrdiff_t dirty_chunk_priority_read_index;
 
   /** Set of chunk keys currently queued for remesh */
   struct {
     int64_t key;
-    unsigned char value;
+    unsigned char value; /* 1=normal queue, 2=priority queue */
   } *dirty_chunk_key_set;
 
   /** Terrain texture atlas */
@@ -145,9 +149,20 @@ void World_SetSkyLight(World *world, int x, int y, int z, int value);
 void World_MarkChunkDirty(World *world, int cx, int cz);
 
 /**
+ * Marks a chunk for high-priority mesh rebuild.
+ * Priority queue entries are consumed before normal queue entries.
+ */
+void World_MarkChunkDirtyPriority(World *world, int cx, int cz);
+
+/**
  * Marks a chunk and its 4 neighbors as needing mesh rebuild.
  */
 void World_MarkNeighborsDirty(World *world, int cx, int cz);
+
+/**
+ * Marks a chunk and its 4 neighbors for high-priority mesh rebuild.
+ */
+void World_MarkNeighborsDirtyPriority(World *world, int cx, int cz);
 
 /**
  * Checks if a block position contains a solid block.
