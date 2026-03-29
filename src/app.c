@@ -121,7 +121,7 @@ int main(int argc, char **argv) {
     int ticks_this_frame = 0;
     while (accumulator >= GAME_TICK_DT && ticks_this_frame < GAME_MAX_TICKS_PER_FRAME) {
       Game_Tick(&game, &pending_input, (float)GAME_TICK_DT);
-      if (WindowShouldClose()) {
+      if (WindowShouldClose() || game.quit_requested) {
         break;
       }
       Game_ClearTickEdgeInput(&pending_input);
@@ -129,7 +129,7 @@ int main(int argc, char **argv) {
       ticks_this_frame++;
     }
 
-    if (WindowShouldClose()) {
+    if (WindowShouldClose() || game.quit_requested) {
       break;
     }
 

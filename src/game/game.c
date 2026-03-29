@@ -15,8 +15,10 @@
 #include "game/player.h"
 #include "game/raycast.h"
 #include "net/net.h"
+#include "net/protocol.h"
 #include "raylib.h"
 #include "rlcimgui.h"
+#include "server/server_core.h"
 #include "ui/hud.h"
 #include "ui/ui.h"
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
@@ -208,21 +210,23 @@ static void game_process_network(Game *game) {
         break;
 
       case NET_MSG_S2C_CHUNK_DATA:
-        World_ApplyChunkData(&game->world, event.payload.chunk_data.cx, event.payload.chunk_data.cz,
-                             event.payload.chunk_data.blocks, sizeof(event.payload.chunk_data.blocks),
-                             event.payload.chunk_data.skylight, sizeof(event.payload.chunk_data.skylight),
-                             event.payload.chunk_data.heightmap,
-                             sizeof(event.payload.chunk_data.heightmap));
+        World_ApplyChunkData(
+            &game->world, event.payload.chunk_data.cx, event.payload.chunk_data.cz,
+            event.payload.chunk_data.blocks, sizeof(event.payload.chunk_data.blocks),
+            event.payload.chunk_data.skylight, sizeof(event.payload.chunk_data.skylight),
+            event.payload.chunk_data.heightmap, sizeof(event.payload.chunk_data.heightmap));
         break;
 
       case NET_MSG_S2C_BLOCK_DELTA:
-        World_ApplyBlockDelta(&game->world, event.payload.block_delta.x, event.payload.block_delta.y,
-                              event.payload.block_delta.z, event.payload.block_delta.block_id,
+        World_ApplyBlockDelta(&game->world, event.payload.block_delta.x,
+                              event.payload.block_delta.y, event.payload.block_delta.z,
+                              event.payload.block_delta.block_id,
                               event.payload.block_delta.skylight);
         break;
 
       case NET_MSG_S2C_CHUNK_UNLOAD:
-        World_RemoveChunk(&game->world, event.payload.chunk_unload.cx, event.payload.chunk_unload.cz);
+        World_RemoveChunk(&game->world, event.payload.chunk_unload.cx,
+                          event.payload.chunk_unload.cz);
         break;
 
       case NET_MSG_S2C_DISCONNECT:
@@ -540,7 +544,6 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
   }
 
   if (game->quit_requested) {
-    CloseWindow();
     return;
   }
 
@@ -607,8 +610,8 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
 
   Profiler_BeginSection("Network");
   game_process_network(game);
-  bool gameplay_enabled =
-      (!game->show_debug_menu && !game_is_paused(game) && game->cursor_locked && !consumed_relock_click);
+  bool gameplay_enabled = (!game->show_debug_menu && !game_is_paused(game) && game->cursor_locked &&
+                           !consumed_relock_click);
   game_send_input(game, input, gameplay_enabled);
   game->network_tick_counter++;
   Profiler_EndSection();
