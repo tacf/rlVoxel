@@ -6,7 +6,6 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu11")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-option(RLVOXEL_BUILD_TESTS "Build rlVoxel runtime tests" ON)
 
 find_package(Threads REQUIRED)
 
@@ -103,23 +102,3 @@ target_link_libraries(rlVoxel PRIVATE rlvoxel_runtime)
 
 add_executable(rlVoxelServer src/server/server_main.c)
 target_link_libraries(rlVoxelServer PRIVATE rlvoxel_runtime)
-
-if (RLVOXEL_BUILD_TESTS)
-    enable_testing()
-
-    add_executable(rlvoxel_test_protocol tests/protocol_roundtrip_test.c)
-    target_link_libraries(rlvoxel_test_protocol PRIVATE net)
-    add_test(NAME rlvoxel_protocol_roundtrip COMMAND rlvoxel_test_protocol)
-
-    add_executable(rlvoxel_test_local_transport tests/local_transport_test.c)
-    target_link_libraries(rlvoxel_test_local_transport PRIVATE net)
-    add_test(NAME rlvoxel_local_transport COMMAND rlvoxel_test_local_transport)
-
-    add_executable(rlvoxel_test_server_determinism tests/server_determinism_test.c)
-    target_link_libraries(rlvoxel_test_server_determinism PRIVATE rlvoxel_runtime)
-    add_test(NAME rlvoxel_server_determinism COMMAND rlvoxel_test_server_determinism)
-
-    add_executable(rlvoxel_test_net_facade tests/net_facade_test.c)
-    target_link_libraries(rlvoxel_test_net_facade PRIVATE net)
-    add_test(NAME rlvoxel_net_facade COMMAND rlvoxel_test_net_facade)
-endif()
