@@ -1,7 +1,10 @@
 #include "net/transport.h"
+#include "enet/types.h"
 
+#include <bits/pthreadtypes.h>
 #include <enet/enet.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 

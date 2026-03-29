@@ -31,6 +31,7 @@ typedef enum TransportEventType {
 /** Raw transport event payload. */
 typedef struct TransportEvent {
   TransportEventType type;
+  /* Transport peer id for this event. v1 uses one client/server peer. */
   int peer_id;
   uint8_t channel;
   /* Heap-owned copy for TRANSPORT_EVENT_PACKET; free with Transport_FreeEvent. */
@@ -54,9 +55,9 @@ struct ITransportEndpoint {
 /** Sends a raw packet through endpoint transport. */
 bool Transport_Send(ITransportEndpoint *endpoint, const uint8_t *data, size_t size, uint8_t channel,
                     TransportReliability reliability, int peer_id);
-/** Polls next raw event from endpoint inbox. */
+/** Polls next raw event from endpoint inbox (returns false when empty). */
 bool Transport_Poll(ITransportEndpoint *endpoint, TransportEvent *out_event);
-/** Services transport I/O (socket pump for ENet). */
+/** Services transport I/O (socket pump for ENet, no-op for local pair). */
 void Transport_Service(ITransportEndpoint *endpoint, uint32_t timeout_ms);
 /** Initiates disconnect/close semantics on endpoint. */
 void Transport_Close(ITransportEndpoint *endpoint);
@@ -65,11 +66,15 @@ void Transport_Destroy(ITransportEndpoint *endpoint);
 /** Releases heap-owned event data buffer and zeroes struct. */
 void Transport_FreeEvent(TransportEvent *event);
 
-/** Creates local in-memory client/server endpoint pair. */
+/**
+ * Creates local in-memory client/server endpoint pair.
+ *
+ * Out endpoints are independent handles and must each be destroyed by caller.
+ */
 bool Transport_CreateLocalPair(ITransportEndpoint **out_client, ITransportEndpoint **out_server);
 /** Creates ENet client endpoint and starts connect attempt. */
 ITransportEndpoint *Transport_CreateEnetClient(const char *host, uint16_t port);
-/** Creates ENet server endpoint bound to bind_ip:port. */
+/** Creates ENet server endpoint bound to bind_ip:port with max peer slots. */
 ITransportEndpoint *Transport_CreateEnetServer(const char *bind_ip, uint16_t port,
                                                size_t max_clients);
 

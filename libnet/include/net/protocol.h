@@ -16,8 +16,8 @@
 
 /** Wire magic ('RVXL') present in every packet header. */
 #define RVNET_MAGIC 0x5256584Cu /* 'RVXL' */
-/** Protocol version for v1 compatibility checks. */
-#define RVNET_VERSION 1u
+/** Protocol version for compatibility checks. */
+#define RVNET_VERSION 2u
 /** Max UTF-8-safe disconnect reason bytes (excluding trailing NUL). */
 #define RVNET_MAX_DISCONNECT_REASON 128u
 
@@ -31,7 +31,13 @@ typedef enum NetMessageType {
   NET_MSG_S2C_BLOCK_DELTA = 6,
   NET_MSG_S2C_CHUNK_UNLOAD = 7,
   NET_MSG_S2C_DISCONNECT = 8,
+  NET_MSG_C2S_PLAYER_MOVE = 9,
 } NetMessageType;
+
+typedef enum GameplayMode {
+  GAMEPLAY_MODE_CREATIVE = 0,
+  GAMEPLAY_MODE_SURVIVAL = 1,
+} GameplayMode;
 
 /** Bitfield flags for GameplayInputCmd.buttons. */
 enum {
@@ -66,18 +72,55 @@ typedef struct NetWelcome {
   int32_t tick_rate;
 } NetWelcome;
 
-/** Authoritative gameplay command sampled at fixed tick cadence. */
+/**
+ * Client gameplay action command.
+ *
+ * Used for edge-triggered actions (clicks) and selected block authority.
+ * Movement authority is carried by NetPlayerMove.
+ * Also carries gameplay mode/fly flags so server can enforce mode rules.
+ */
 typedef struct GameplayInputCmd {
   uint32_t tick_id;
   uint8_t buttons;
   uint8_t selected_block;
+  uint8_t gameplay_mode;
+  uint8_t fly_enabled;
   float look_delta_x;
   float look_delta_y;
 } GameplayInputCmd;
 
-/** Authoritative player snapshot streamed by server. */
-typedef struct AuthoritativePlayerState {
+/**
+ * Client-reported movement snapshot.
+ *
+ * - Client sends movement pose updates each tick (or at unchanged reminder cadence).
+ * - Server validates and either accepts pose or emits correction state.
+ */
+typedef struct NetPlayerMove {
   uint32_t tick_id;
+  float position_x;
+  float position_y;
+  float position_z;
+  float velocity_x;
+  float velocity_y;
+  float velocity_z;
+  float yaw;
+  float pitch;
+  uint8_t on_ground;
+} NetPlayerMove;
+
+/**
+ * Authoritative player snapshot streamed by server.
+ *
+ * Sent for correction and periodic sync.
+ */
+typedef struct AuthoritativePlayerState {
+  /* Server simulation tick for this snapshot. */
+  uint32_t tick_id;
+  /*
+   * Most recent client NetPlayerMove.tick_id accepted by server when
+   * producing this snapshot. Used for client reconciliation.
+   */
+  uint32_t input_tick_id;
   float position_x;
   float position_y;
   float position_z;
@@ -130,6 +173,17 @@ typedef struct NetDisconnect {
 
 /** Returns fixed encoded header size in bytes. */
 size_t Protocol_HeaderSize(void);
+/** Returns stable display name for a NetMessageType (never NULL). */
+const char *Protocol_MessageTypeName(NetMessageType type);
+/**
+ * Returns fixed payload size for a message type, or 0 when payload is variable-length.
+ * Current variable-length type: NET_MSG_S2C_DISCONNECT.
+ */
+size_t Protocol_FixedPayloadSize(NetMessageType type);
+/**
+ * Returns fixed packet size (header + payload) for message type, or 0 for variable-length types.
+ */
+size_t Protocol_FixedPacketSize(NetMessageType type);
 /**
  * Validates and parses header fields from a packet buffer.
  * Checks magic/version/type and minimum packet size.
@@ -139,6 +193,8 @@ bool Protocol_ParseHeader(const uint8_t *data, size_t size, NetMessageHeader *ou
 /**
  * Encode/decode helpers for each v1 message type.
  * All decode helpers parse and return NetMessageHeader in out_header.
+ * Encode helpers write encoded packet bytes into caller-provided `out`.
+ * Decode helpers validate header + payload size before writing outputs.
  */
 bool Protocol_EncodeHello(uint32_t sequence, uint32_t tick, const NetHello *msg, uint8_t *out,
                           size_t out_cap, size_t *out_size);
@@ -154,6 +210,11 @@ bool Protocol_EncodeInputCmd(uint32_t sequence, uint32_t tick, const GameplayInp
                              uint8_t *out, size_t out_cap, size_t *out_size);
 bool Protocol_DecodeInputCmd(const uint8_t *data, size_t size, NetMessageHeader *out_header,
                              GameplayInputCmd *out_msg);
+
+bool Protocol_EncodePlayerMove(uint32_t sequence, uint32_t tick, const NetPlayerMove *msg,
+                               uint8_t *out, size_t out_cap, size_t *out_size);
+bool Protocol_DecodePlayerMove(const uint8_t *data, size_t size, NetMessageHeader *out_header,
+                               NetPlayerMove *out_msg);
 
 bool Protocol_EncodePlayerState(uint32_t sequence, uint32_t tick,
                                 const AuthoritativePlayerState *msg, uint8_t *out, size_t out_cap,

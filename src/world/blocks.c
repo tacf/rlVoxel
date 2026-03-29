@@ -137,6 +137,34 @@ void Blocks_Init(void) {
   };
 }
 
+int Block_GetDurability(uint8_t block_id) {
+  switch (block_id) {
+  case BLOCK_AIR:
+  case BLOCK_WATER:
+  case BLOCK_LAVA:
+    return 0;
+  case BLOCK_TALL_GRASS:
+  case BLOCK_LEAVES:
+    return 1;
+  case BLOCK_DIRT:
+  case BLOCK_SAND:
+  case BLOCK_GRAVEL:
+  case BLOCK_ICE:
+    return 2;
+  case BLOCK_GRASS:
+  case BLOCK_LOG:
+    return 3;
+  case BLOCK_SANDSTONE:
+    return 4;
+  case BLOCK_STONE:
+    return 5;
+  case BLOCK_BEDROCK:
+    return 0;
+  default:
+    return Block_IsSolid(block_id) ? 3 : 0;
+  }
+}
+
 #undef TINT_ALL_WHITE
 #undef TINT_ALL_RGB
 #undef TINT_RGB

@@ -79,6 +79,7 @@ set(RUNTIME_SOURCES
     src/profiling/profiler.c
     src/profiling/profiler_renderer.c
     src/diagnostics/telemetry.c
+    src/diagnostics/net_profiler.c
     src/diagnostics/process_stats.c
     src/server/server_core.c
 )

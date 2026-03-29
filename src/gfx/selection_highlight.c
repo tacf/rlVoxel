@@ -5,6 +5,7 @@
 
 #include "game/raycast.h"
 #include "raylib.h"
+#include "rlgl.h"
 
 typedef struct SelectionFaceAxes {
   int normal_axis;
@@ -153,4 +154,111 @@ void SelectionHighlight_Draw(const VoxelRaycastHit *hit) {
   for (size_t i = 0; i < sizeof(k_selection_faces) / sizeof(k_selection_faces[0]); i++) {
     draw_selection_face_brackets(mins, maxs, k_selection_faces[i], normal_offset, bracket_color);
   }
+}
+
+void SelectionHighlight_DrawDamageOverlay(Texture2D terrain_texture, int block_x, int block_y,
+                                          int block_z, int crack_stage) {
+  Rectangle source;
+  float min_x, min_y, min_z;
+  float max_x, max_y, max_z;
+  float u0, v0, u1, v1;
+  int stage = crack_stage;
+
+  if (terrain_texture.id == 0) {
+    return;
+  }
+
+  if (stage < 0) {
+    stage = 0;
+  }
+  if (stage > 9) {
+    stage = 9;
+  }
+
+  source = (Rectangle){
+      .x = (float)stage * 16.0f,
+      .y = 15.0f * 16.0f,
+      .width = 16.0f,
+      .height = 16.0f,
+  };
+  min_x = (float)block_x - 0.002f;
+  min_y = (float)block_y - 0.002f;
+  min_z = (float)block_z - 0.002f;
+  max_x = (float)block_x + 1.002f;
+  max_y = (float)block_y + 1.002f;
+  max_z = (float)block_z + 1.002f;
+
+  u0 = source.x / (float)terrain_texture.width;
+  v0 = source.y / (float)terrain_texture.height;
+  u1 = (source.x + source.width) / (float)terrain_texture.width;
+  v1 = (source.y + source.height) / (float)terrain_texture.height;
+
+  rlDisableBackfaceCulling();
+  rlSetTexture(terrain_texture.id);
+  rlBegin(RL_QUADS);
+  rlColor4ub(255, 255, 255, 210);
+
+  /* Bottom (-Y) */
+  rlTexCoord2f(u0, v0);
+  rlVertex3f(min_x, min_y, min_z);
+  rlTexCoord2f(u1, v0);
+  rlVertex3f(max_x, min_y, min_z);
+  rlTexCoord2f(u1, v1);
+  rlVertex3f(max_x, min_y, max_z);
+  rlTexCoord2f(u0, v1);
+  rlVertex3f(min_x, min_y, max_z);
+
+  /* Top (+Y) */
+  rlTexCoord2f(u0, v0);
+  rlVertex3f(min_x, max_y, max_z);
+  rlTexCoord2f(u1, v0);
+  rlVertex3f(max_x, max_y, max_z);
+  rlTexCoord2f(u1, v1);
+  rlVertex3f(max_x, max_y, min_z);
+  rlTexCoord2f(u0, v1);
+  rlVertex3f(min_x, max_y, min_z);
+
+  /* North (-Z) */
+  rlTexCoord2f(u0, v0);
+  rlVertex3f(min_x, min_y, min_z);
+  rlTexCoord2f(u1, v0);
+  rlVertex3f(max_x, min_y, min_z);
+  rlTexCoord2f(u1, v1);
+  rlVertex3f(max_x, max_y, min_z);
+  rlTexCoord2f(u0, v1);
+  rlVertex3f(min_x, max_y, min_z);
+
+  /* South (+Z) */
+  rlTexCoord2f(u0, v0);
+  rlVertex3f(max_x, min_y, max_z);
+  rlTexCoord2f(u1, v0);
+  rlVertex3f(min_x, min_y, max_z);
+  rlTexCoord2f(u1, v1);
+  rlVertex3f(min_x, max_y, max_z);
+  rlTexCoord2f(u0, v1);
+  rlVertex3f(max_x, max_y, max_z);
+
+  /* West (-X) */
+  rlTexCoord2f(u0, v0);
+  rlVertex3f(min_x, min_y, max_z);
+  rlTexCoord2f(u1, v0);
+  rlVertex3f(min_x, min_y, min_z);
+  rlTexCoord2f(u1, v1);
+  rlVertex3f(min_x, max_y, min_z);
+  rlTexCoord2f(u0, v1);
+  rlVertex3f(min_x, max_y, max_z);
+
+  /* East (+X) */
+  rlTexCoord2f(u0, v0);
+  rlVertex3f(max_x, min_y, min_z);
+  rlTexCoord2f(u1, v0);
+  rlVertex3f(max_x, min_y, max_z);
+  rlTexCoord2f(u1, v1);
+  rlVertex3f(max_x, max_y, max_z);
+  rlTexCoord2f(u0, v1);
+  rlVertex3f(max_x, max_y, min_z);
+
+  rlEnd();
+  rlSetTexture(0);
+  rlEnableBackfaceCulling();
 }

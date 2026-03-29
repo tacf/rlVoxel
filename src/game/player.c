@@ -16,6 +16,7 @@
 /* Pitch is clamped to ~89 degrees to prevent gimbal lock */
 #define PITCH_LIMIT 1.55f
 #define MOUSE_SENSITIVITY 0.0023f
+#define PLAYER_FLY_SPEED_TICK 0.38f
 
 static int player_wrap_hotbar_index(int index) {
   if (PLAYER_HOTBAR_SLOTS <= 0) {
@@ -112,6 +113,8 @@ void Player_Init(Player *player, Vector3 spawn_position) {
   memcpy(player->hotbar_blocks, default_hotbar, sizeof(default_hotbar));
   player->hotbar_index = 2; /* DIRT */
   player->selected_block = player->hotbar_blocks[player->hotbar_index];
+  player->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
+  player->fly_enabled = false;
 }
 
 void Player_ApplyHotbarScroll(Player *player, float mouse_wheel_delta) {
@@ -127,7 +130,7 @@ void Player_ApplyHotbarScroll(Player *player, float mouse_wheel_delta) {
       steps = 1;
     }
 
-    int direction = (mouse_wheel_delta > 0.0f) ? -1 : 1; /* Minecraft feel */
+    int direction = (mouse_wheel_delta > 0.0f) ? -1 : 1;
     for (int i = 0; i < steps; i++) {
       player->hotbar_index = player_wrap_hotbar_index(player->hotbar_index + direction);
     }
@@ -137,7 +140,7 @@ void Player_ApplyHotbarScroll(Player *player, float mouse_wheel_delta) {
 }
 
 void Player_Update(Player *player, const World *world, const GameInputSnapshot *input,
-                   float tick_dt, bool mouse_look_enabled) {
+                   float tick_dt, bool mouse_look_enabled, bool fly_enabled) {
   if (!input) {
     return;
   }
@@ -166,6 +169,32 @@ void Player_Update(Player *player, const World *world, const GameInputSnapshot *
   }
   if (input->move_left) {
     input_x += 1.0f;
+  }
+
+  if (fly_enabled) {
+    float up_input = 0.0f;
+    float fly_speed = PLAYER_FLY_SPEED_TICK;
+    if (input->jump_held) {
+      up_input += 1.0f;
+    }
+    if (input->sprint) {
+      up_input -= 1.0f;
+    }
+    Vector3 forward = {sinf(player->yaw), 0.0f, cosf(player->yaw)};
+    Vector3 right = {cosf(player->yaw), 0.0f, -sinf(player->yaw)};
+    Vector3 motion = {0.0f, up_input, 0.0f};
+    motion = Vector3Add(motion, Vector3Scale(forward, input_z));
+    motion = Vector3Add(motion, Vector3Scale(right, input_x));
+
+    if (Vector3LengthSqr(motion) > 1e-6f) {
+      motion = Vector3Normalize(motion);
+    }
+
+    player->velocity = (Vector3){motion.x * fly_speed / tick_dt, motion.y * fly_speed / tick_dt,
+                                 motion.z * fly_speed / tick_dt};
+    player->position = Vector3Add(player->position, Vector3Scale(motion, fly_speed));
+    player->on_ground = false;
+    return;
   }
 
   BoundingBox bounds = Player_GetBoundsAt(player, player->position);

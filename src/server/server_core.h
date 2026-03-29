@@ -66,6 +66,9 @@ typedef struct ServerCore {
   GameplayInputCmd pending_input;
   bool pending_input_available;
   GameplayInputCmd current_input;
+  NetPlayerMove pending_move;
+  bool pending_move_available;
+  NetPlayerMove current_move;
 
   pthread_mutex_t outgoing_mutex;
   ServerOutgoingNode *outgoing_head;
@@ -74,8 +77,19 @@ typedef struct ServerCore {
   bool has_client;
   bool client_ready;
   uint32_t client_render_distance;
+  uint32_t last_applied_input_tick;
   uint32_t tick_counter;
   uint32_t next_sequence;
+  GameplayMode gameplay_mode;
+  bool fly_enabled;
+
+  bool break_state_active;
+  int break_block_x;
+  int break_block_y;
+  int break_block_z;
+  float break_damage;
+  uint32_t break_last_tick;
+  uint32_t break_last_recover_tick;
 
   int64_t *sent_chunk_keys;
   size_t sent_chunk_count;
@@ -100,7 +114,12 @@ bool ServerCore_IsRunning(ServerCore *server);
 
 /** Runs one authoritative tick (used by thread loop and tests). */
 void ServerCore_Tick(ServerCore *server);
-/** Submits latest gameplay input for v1 client (latest-wins semantics). */
+/**
+ * Submits latest gameplay action input for v1 client (latest-wins semantics).
+ *
+ * This is action-oriented input (click edges / selected block), while movement
+ * snapshots are processed from NET_MSG_C2S_PLAYER_MOVE in server_core.c.
+ */
 void ServerCore_SubmitInput(ServerCore *server, int client_id, const GameplayInputCmd *input);
 /** Pops next encoded outgoing packet produced by authoritative tick. */
 bool ServerCore_PollOutgoing(ServerCore *server, ServerOutgoingMessage *out_message);

@@ -57,6 +57,11 @@ static ChunkSortEntry *g_translucent_solid_draw_entries = NULL;
 
 static inline int64_t make_chunk_key(int cx, int cz) { return ((int64_t)cx << 32) | (uint32_t)cz; }
 
+enum {
+  WORLD_DIRTY_QUEUE_NORMAL = 1,
+  WORLD_DIRTY_QUEUE_PRIORITY = 2,
+};
+
 static int floor_div16(int x) {
   if (x >= 0) {
     return x >> 4;
@@ -80,41 +85,96 @@ static const LightUpdateQueue *world_queue_const(const World *world) {
   return (const LightUpdateQueue *)world->light_queue_ptr;
 }
 
-static void world_enqueue_dirty_chunk_key(World *world, int64_t key) {
-  if (world == NULL) {
-    return;
-  }
-  if (hmgeti(world->dirty_chunk_key_set, key) >= 0) {
-    return;
-  }
-  hmput(world->dirty_chunk_key_set, key, 1);
-  arrput(world->dirty_chunk_keys, key);
-}
+static void world_enqueue_dirty_chunk_key(World *world, int64_t key, bool priority) {
+  int entry_index;
+  unsigned char queue_state;
 
-static void world_enqueue_dirty_chunk(World *world, int cx, int cz) {
-  world_enqueue_dirty_chunk_key(world, make_chunk_key(cx, cz));
-}
-
-static void world_compact_dirty_chunk_queue(World *world) {
   if (world == NULL) {
     return;
   }
 
-  ptrdiff_t len = arrlen(world->dirty_chunk_keys);
-  if (world->dirty_chunk_read_index <= 0) {
+  queue_state = priority ? WORLD_DIRTY_QUEUE_PRIORITY : WORLD_DIRTY_QUEUE_NORMAL;
+  entry_index = hmgeti(world->dirty_chunk_key_set, key);
+  if (entry_index >= 0) {
+    if (priority && world->dirty_chunk_key_set[entry_index].value == WORLD_DIRTY_QUEUE_NORMAL) {
+      world->dirty_chunk_key_set[entry_index].value = WORLD_DIRTY_QUEUE_PRIORITY;
+      arrput(world->dirty_chunk_priority_keys, key);
+    }
+    return;
+  }
+  hmput(world->dirty_chunk_key_set, key, queue_state);
+  if (priority) {
+    arrput(world->dirty_chunk_priority_keys, key);
+  } else {
+    arrput(world->dirty_chunk_keys, key);
+  }
+}
+
+static void world_enqueue_dirty_chunk(World *world, int cx, int cz, bool priority) {
+  world_enqueue_dirty_chunk_key(world, make_chunk_key(cx, cz), priority);
+}
+
+static void world_compact_dirty_chunk_queue(int64_t **queue, ptrdiff_t *read_index) {
+  ptrdiff_t len;
+
+  if (queue == NULL || read_index == NULL || *queue == NULL) {
     return;
   }
 
-  if (world->dirty_chunk_read_index >= len) {
-    arrsetlen(world->dirty_chunk_keys, 0);
-    world->dirty_chunk_read_index = 0;
+  len = arrlen(*queue);
+  if (*read_index <= 0) {
     return;
   }
 
-  if (world->dirty_chunk_read_index > 1024 && world->dirty_chunk_read_index * 2 >= len) {
-    arrdeln(world->dirty_chunk_keys, 0, world->dirty_chunk_read_index);
-    world->dirty_chunk_read_index = 0;
+  if (*read_index >= len) {
+    arrsetlen(*queue, 0);
+    *read_index = 0;
+    return;
   }
+
+  if (*read_index > 1024 && *read_index * 2 >= len) {
+    arrdeln(*queue, 0, *read_index);
+    *read_index = 0;
+  }
+}
+
+static bool world_dequeue_dirty_chunk_key(World *world, int64_t *out_key) {
+  ptrdiff_t entry_index;
+  int64_t key;
+
+  if (world == NULL || out_key == NULL) {
+    return false;
+  }
+
+  while (world->dirty_chunk_priority_read_index < arrlen(world->dirty_chunk_priority_keys)) {
+    key = world->dirty_chunk_priority_keys[world->dirty_chunk_priority_read_index++];
+    entry_index = hmgeti(world->dirty_chunk_key_set, key);
+    if (entry_index < 0) {
+      continue;
+    }
+    if (world->dirty_chunk_key_set[entry_index].value != WORLD_DIRTY_QUEUE_PRIORITY) {
+      continue;
+    }
+    hmdel(world->dirty_chunk_key_set, key);
+    *out_key = key;
+    return true;
+  }
+
+  while (world->dirty_chunk_read_index < arrlen(world->dirty_chunk_keys)) {
+    key = world->dirty_chunk_keys[world->dirty_chunk_read_index++];
+    entry_index = hmgeti(world->dirty_chunk_key_set, key);
+    if (entry_index < 0) {
+      continue;
+    }
+    if (world->dirty_chunk_key_set[entry_index].value != WORLD_DIRTY_QUEUE_NORMAL) {
+      continue;
+    }
+    hmdel(world->dirty_chunk_key_set, key);
+    *out_key = key;
+    return true;
+  }
+
+  return false;
 }
 
 static void world_relight_columns_around(World *world, int x, int z, int radius) {
@@ -157,7 +217,7 @@ Chunk *World_GetOrCreateChunk(World *world, int cx, int cz) {
   voxel_chunkmap_put(&world->chunks, key, chunk);
 
   if (world->meshing_enabled && chunk->mesh_dirty) {
-    world_enqueue_dirty_chunk_key(world, key);
+    world_enqueue_dirty_chunk_key(world, key, false);
   }
 
   if (world->meshing_enabled) {
@@ -211,7 +271,7 @@ bool World_SetBlock(World *world, int x, int y, int z, uint8_t block_id) {
 
   if (world->meshing_enabled) {
     /* Direct block edits should always queue a remesh right away. */
-    World_MarkChunkDirty(world, cx, cz);
+    World_MarkChunkDirtyPriority(world, cx, cz);
   }
 
   if (world->authoritative_mode) {
@@ -223,7 +283,7 @@ bool World_SetBlock(World *world, int x, int y, int z, uint8_t block_id) {
   }
 
   if (world->meshing_enabled && (lx == 0 || lx == 15 || lz == 0 || lz == 15)) {
-    World_MarkNeighborsDirty(world, cx, cz);
+    World_MarkNeighborsDirtyPriority(world, cx, cz);
   }
 
   if (world->authoritative_mode) {
@@ -294,7 +354,17 @@ void World_MarkChunkDirty(World *world, int cx, int cz) {
   if (chunk != NULL) {
     if (world->meshing_enabled) {
       chunk->mesh_dirty = true;
-      world_enqueue_dirty_chunk(world, cx, cz);
+      world_enqueue_dirty_chunk(world, cx, cz, false);
+    }
+  }
+}
+
+void World_MarkChunkDirtyPriority(World *world, int cx, int cz) {
+  Chunk *chunk = World_GetChunk(world, cx, cz);
+  if (chunk != NULL) {
+    if (world->meshing_enabled) {
+      chunk->mesh_dirty = true;
+      world_enqueue_dirty_chunk(world, cx, cz, true);
     }
   }
 }
@@ -305,6 +375,14 @@ void World_MarkNeighborsDirty(World *world, int cx, int cz) {
   World_MarkChunkDirty(world, cx - 1, cz);
   World_MarkChunkDirty(world, cx, cz + 1);
   World_MarkChunkDirty(world, cx, cz - 1);
+}
+
+void World_MarkNeighborsDirtyPriority(World *world, int cx, int cz) {
+  World_MarkChunkDirtyPriority(world, cx, cz);
+  World_MarkChunkDirtyPriority(world, cx + 1, cz);
+  World_MarkChunkDirtyPriority(world, cx - 1, cz);
+  World_MarkChunkDirtyPriority(world, cx, cz + 1);
+  World_MarkChunkDirtyPriority(world, cx, cz - 1);
 }
 
 bool World_IsSolidAt(const World *world, int x, int y, int z) {
@@ -605,6 +683,8 @@ void World_Shutdown(World *world) {
   }
 
   voxel_chunkmap_destroy(&world->chunks);
+  arrfree(world->dirty_chunk_priority_keys);
+  world->dirty_chunk_priority_read_index = 0;
   arrfree(world->dirty_chunk_keys);
   world->dirty_chunk_read_index = 0;
   hmfree(world->dirty_chunk_key_set);
@@ -657,12 +737,26 @@ void World_Update(World *world, Vector3 player_pos, float dt) {
   }
 
   if (world->meshing_enabled) {
+    int rebuild_budget = 0;
     Profiler_BeginSection("ChunkMeshing");
-    int rebuild_budget = 4;
+    /*
+     * Client-replicated worlds avoid bursty remesh work while streaming chunks.
+     * We only permit one remesh every other simulation tick.
+     */
+    if (world->authoritative_mode) {
+      rebuild_budget = 4;
+    } else if (world->replicated_mesh_skip_ticks > 0) {
+      world->replicated_mesh_skip_ticks--;
+    } else {
+      rebuild_budget = 1;
+      world->replicated_mesh_skip_ticks = 1;
+    }
     int rebuilt = 0;
-    while (rebuild_budget > 0 && world->dirty_chunk_read_index < arrlen(world->dirty_chunk_keys)) {
-      int64_t key = world->dirty_chunk_keys[world->dirty_chunk_read_index++];
-      hmdel(world->dirty_chunk_key_set, key);
+    while (rebuild_budget > 0) {
+      int64_t key;
+      if (!world_dequeue_dirty_chunk_key(world, &key)) {
+        break;
+      }
       Chunk *chunk = voxel_chunkmap_get(world->chunks, key);
       if (chunk && chunk->mesh_dirty) {
         WORLD_LOG("Rebuilding chunk (%d, %d)", chunk->cx, chunk->cz);
@@ -672,7 +766,9 @@ void World_Update(World *world, Vector3 player_pos, float dt) {
         rebuilt++;
       }
     }
-    world_compact_dirty_chunk_queue(world);
+    world_compact_dirty_chunk_queue(&world->dirty_chunk_priority_keys,
+                                    &world->dirty_chunk_priority_read_index);
+    world_compact_dirty_chunk_queue(&world->dirty_chunk_keys, &world->dirty_chunk_read_index);
 
     if (rebuilt > 0) {
       WORLD_LOG("Total rebuilt: %d chunks", rebuilt);
@@ -906,9 +1002,9 @@ bool World_ApplyBlockDelta(World *world, int x, int y, int z, uint8_t block_id, 
   Chunk_RecomputeHeightColumn(chunk, lx, lz);
 
   if (world->meshing_enabled) {
-    World_MarkChunkDirty(world, cx, cz);
+    World_MarkChunkDirtyPriority(world, cx, cz);
     if (lx == 0 || lx == 15 || lz == 0 || lz == 15) {
-      World_MarkNeighborsDirty(world, cx, cz);
+      World_MarkNeighborsDirtyPriority(world, cx, cz);
     }
   }
 

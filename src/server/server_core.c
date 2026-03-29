@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include <raylib.h>
+#include <raymath.h>
 
 #include "constants.h"
 #include "game/game_input.h"
@@ -48,8 +49,57 @@ static int floor_div16(int x) {
   return -(((-x) + 15) >> 4);
 }
 
-static int64_t make_chunk_key(int cx, int cz) {
-  return ((int64_t)cx << 32) | (uint32_t)cz;
+static int64_t make_chunk_key(int cx, int cz) { return ((int64_t)cx << 32) | (uint32_t)cz; }
+
+#define SERVER_MOVE_MAX_HORIZ_PER_TICK 1.20f
+#define SERVER_MOVE_MAX_VERT_PER_TICK 2.40f
+#define SERVER_MOVE_MAX_TICK_GAP 20u
+#define SERVER_BREAK_DAMAGE_PER_HIT 1.0f
+#define SERVER_BREAK_RECOVERY_DELAY_TICKS 10u
+#define SERVER_BREAK_RECOVERY_INTERVAL_TICKS 5u
+
+static void server_reset_break_state(ServerCore *server) {
+  if (server == NULL) {
+    return;
+  }
+  server->break_state_active = false;
+  server->break_block_x = 0;
+  server->break_block_y = 0;
+  server->break_block_z = 0;
+  server->break_damage = 0.0f;
+  server->break_last_tick = 0u;
+  server->break_last_recover_tick = 0u;
+}
+
+static void server_decay_break_state(ServerCore *server) {
+  uint32_t recovery_start_tick;
+  uint32_t elapsed_recovery_ticks;
+  uint32_t recovery_steps;
+
+  if (server == NULL || !server->break_state_active) {
+    return;
+  }
+
+  recovery_start_tick = server->break_last_tick + SERVER_BREAK_RECOVERY_DELAY_TICKS;
+  if (server->tick_counter < recovery_start_tick) {
+    return;
+  }
+
+  if (server->break_last_recover_tick < recovery_start_tick) {
+    server->break_last_recover_tick = recovery_start_tick;
+  }
+
+  if (server->tick_counter < server->break_last_recover_tick + SERVER_BREAK_RECOVERY_INTERVAL_TICKS) {
+    return;
+  }
+
+  elapsed_recovery_ticks = server->tick_counter - server->break_last_recover_tick;
+  recovery_steps = elapsed_recovery_ticks / SERVER_BREAK_RECOVERY_INTERVAL_TICKS;
+  server->break_damage -= (float)recovery_steps * SERVER_BREAK_DAMAGE_PER_HIT;
+  server->break_last_recover_tick += recovery_steps * SERVER_BREAK_RECOVERY_INTERVAL_TICKS;
+  if (server->break_damage <= 0.0f) {
+    server_reset_break_state(server);
+  }
 }
 
 static bool sent_chunk_contains(const ServerCore *server, int64_t key) {
@@ -91,8 +141,8 @@ static void sent_chunk_remove_at(ServerCore *server, size_t idx) {
 
 static void sent_chunk_clear(ServerCore *server) { server->sent_chunk_count = 0; }
 
-static void server_queue_outgoing(ServerCore *server, const uint8_t *data, size_t size, uint8_t channel,
-                                  NetReliability reliability) {
+static void server_queue_outgoing(ServerCore *server, const uint8_t *data, size_t size,
+                                  uint8_t channel, NetReliability reliability) {
   ServerOutgoingNode *node;
 
   if (server == NULL || data == NULL || size == 0) {
@@ -196,8 +246,8 @@ static void server_send_disconnect(ServerCore *server, const char *reason) {
     strncpy(disconnect_msg.reason, "Disconnected", RVNET_MAX_DISCONNECT_REASON - 1);
   }
 
-  if (!Protocol_EncodeDisconnect(server->next_sequence++, server->tick_counter, &disconnect_msg, buffer,
-                                 sizeof(buffer), &size)) {
+  if (!Protocol_EncodeDisconnect(server->next_sequence++, server->tick_counter, &disconnect_msg,
+                                 buffer, sizeof(buffer), &size)) {
     return;
   }
 
@@ -207,6 +257,7 @@ static void server_send_disconnect(ServerCore *server, const char *reason) {
 static void server_send_player_state(ServerCore *server) {
   AuthoritativePlayerState state = {
       .tick_id = server->tick_counter,
+      .input_tick_id = server->last_applied_input_tick,
       .position_x = server->player.position.x,
       .position_y = server->player.position.y,
       .position_z = server->player.position.z,
@@ -226,7 +277,7 @@ static void server_send_player_state(ServerCore *server) {
     return;
   }
 
-  server_queue_outgoing(server, buffer, size, 1, NET_UNRELIABLE);
+  server_queue_outgoing(server, buffer, size, 1, NET_RELIABLE);
 }
 
 static void server_send_chunk_unload(ServerCore *server, int cx, int cz) {
@@ -306,10 +357,38 @@ static void server_apply_interactions(ServerCore *server, const GameplayInputCmd
   dir = Player_GetLookDirection(&server->player);
 
   if ((input->buttons & GAMEPLAY_INPUT_LEFT_CLICK) != 0) {
-    if (Raycast_VoxelForPlacement(&server->world, eye, dir, PLAYER_REACH_DISTANCE, &hit) && hit.hit) {
-      if (hit.block_id != BLOCK_BEDROCK &&
-          World_SetBlock(&server->world, hit.block_x, hit.block_y, hit.block_z, BLOCK_AIR)) {
-        server_send_block_delta(server, hit.block_x, hit.block_y, hit.block_z);
+    if (Raycast_VoxelForPlacement(&server->world, eye, dir, PLAYER_REACH_DISTANCE, &hit) &&
+        hit.hit) {
+      if (server->gameplay_mode == GAMEPLAY_MODE_CREATIVE) {
+        if (hit.block_id != BLOCK_BEDROCK &&
+            World_SetBlock(&server->world, hit.block_x, hit.block_y, hit.block_z, BLOCK_AIR)) {
+          server_send_block_delta(server, hit.block_x, hit.block_y, hit.block_z);
+          server_reset_break_state(server);
+        }
+      } else {
+        int durability = Block_GetDurability(hit.block_id);
+        if (hit.block_id == BLOCK_BEDROCK || durability <= 0) {
+          server_reset_break_state(server);
+          return;
+        }
+
+        if (!server->break_state_active || server->break_block_x != hit.block_x ||
+            server->break_block_y != hit.block_y || server->break_block_z != hit.block_z) {
+          server->break_state_active = true;
+          server->break_block_x = hit.block_x;
+          server->break_block_y = hit.block_y;
+          server->break_block_z = hit.block_z;
+          server->break_damage = 0.0f;
+          server->break_last_recover_tick = 0u;
+        }
+
+        server->break_damage += SERVER_BREAK_DAMAGE_PER_HIT;
+        server->break_last_tick = server->tick_counter;
+        if (server->break_damage >= (float)durability &&
+            World_SetBlock(&server->world, hit.block_x, hit.block_y, hit.block_z, BLOCK_AIR)) {
+          server_send_block_delta(server, hit.block_x, hit.block_y, hit.block_z);
+          server_reset_break_state(server);
+        }
       }
     }
   }
@@ -319,7 +398,8 @@ static void server_apply_interactions(ServerCore *server, const GameplayInputCmd
     BoundingBox block_box;
     BoundingBox player_box;
 
-    if (!(Raycast_VoxelForPlacement(&server->world, eye, dir, PLAYER_REACH_DISTANCE, &hit) && hit.hit)) {
+    if (!(Raycast_VoxelForPlacement(&server->world, eye, dir, PLAYER_REACH_DISTANCE, &hit) &&
+          hit.hit)) {
       return;
     }
 
@@ -350,26 +430,73 @@ static void server_apply_interactions(ServerCore *server, const GameplayInputCmd
   }
 }
 
-static void server_update_player(ServerCore *server, const GameplayInputCmd *input) {
-  GameInputSnapshot sim = {0};
-
-  if (server == NULL || input == NULL) {
-    return;
+static bool server_is_finite_move(const NetPlayerMove *move) {
+  if (move == NULL) {
+    return false;
   }
 
-  sim.move_forward = (input->buttons & GAMEPLAY_INPUT_MOVE_FORWARD) != 0;
-  sim.move_backward = (input->buttons & GAMEPLAY_INPUT_MOVE_BACKWARD) != 0;
-  sim.move_left = (input->buttons & GAMEPLAY_INPUT_MOVE_LEFT) != 0;
-  sim.move_right = (input->buttons & GAMEPLAY_INPUT_MOVE_RIGHT) != 0;
-  sim.sprint = (input->buttons & GAMEPLAY_INPUT_SPRINT) != 0;
-  sim.jump_held = (input->buttons & GAMEPLAY_INPUT_JUMP_HELD) != 0;
-  sim.left_click_pressed = (input->buttons & GAMEPLAY_INPUT_LEFT_CLICK) != 0;
-  sim.right_click_pressed = (input->buttons & GAMEPLAY_INPUT_RIGHT_CLICK) != 0;
-  sim.mouse_delta = (Vector2){input->look_delta_x, input->look_delta_y};
+  return isfinite(move->position_x) && isfinite(move->position_y) && isfinite(move->position_z) &&
+         isfinite(move->velocity_x) && isfinite(move->velocity_y) && isfinite(move->velocity_z) &&
+         isfinite(move->yaw) && isfinite(move->pitch);
+}
 
-  server->player.selected_block = input->selected_block;
+static bool server_apply_client_move(ServerCore *server, const NetPlayerMove *move) {
+  Vector3 target_position;
+  Vector3 target_velocity;
+  Vector3 delta;
+  float horizontal_delta;
+  float vertical_delta;
+  float max_horizontal;
+  float max_vertical;
+  uint32_t tick_gap = 1u;
+  BoundingBox target_bounds;
 
-  Player_Update(&server->player, &server->world, &sim, 1.0f / (float)server->config.tick_rate, true);
+  if (server == NULL || move == NULL || !server_is_finite_move(move)) {
+    return false;
+  }
+
+  if (server->last_applied_input_tick != 0u) {
+    if (move->tick_id <= server->last_applied_input_tick) {
+      return true;
+    }
+    tick_gap = move->tick_id - server->last_applied_input_tick;
+  }
+  if (tick_gap > SERVER_MOVE_MAX_TICK_GAP) {
+    tick_gap = SERVER_MOVE_MAX_TICK_GAP;
+  }
+
+  target_position = (Vector3){move->position_x, move->position_y, move->position_z};
+  target_velocity = (Vector3){move->velocity_x, move->velocity_y, move->velocity_z};
+
+  if (target_position.y < -64.0f || target_position.y > (float)WORLD_MAX_HEIGHT + 64.0f) {
+    return false;
+  }
+
+  delta = Vector3Subtract(target_position, server->player.position);
+  horizontal_delta = sqrtf(delta.x * delta.x + delta.z * delta.z);
+  vertical_delta = fabsf(delta.y);
+  max_horizontal = SERVER_MOVE_MAX_HORIZ_PER_TICK * (float)tick_gap;
+  max_vertical = SERVER_MOVE_MAX_VERT_PER_TICK * (float)tick_gap;
+
+  if (horizontal_delta > max_horizontal || vertical_delta > max_vertical) {
+    return false;
+  }
+
+  target_bounds = Player_GetBoundsAt(&server->player, target_position);
+  if (World_CheckAABB(&server->world, target_bounds)) {
+    return false;
+  }
+
+  server->player.previous_position = server->player.position;
+  server->player.previous_yaw = server->player.yaw;
+  server->player.previous_pitch = server->player.pitch;
+  server->player.position = target_position;
+  server->player.velocity = target_velocity;
+  server->player.yaw = move->yaw;
+  server->player.pitch = move->pitch;
+  server->player.on_ground = move->on_ground != 0u;
+  server->last_applied_input_tick = move->tick_id;
+  return true;
 }
 
 static void server_stream_visible_chunks(ServerCore *server) {
@@ -420,13 +547,62 @@ static void server_stream_visible_chunks(ServerCore *server) {
 }
 
 static void server_consume_latest_input(ServerCore *server, GameplayInputCmd *out_input) {
+  bool accepted_pending = false;
+
   pthread_mutex_lock(&server->input_mutex);
   if (server->pending_input_available) {
-    server->current_input = server->pending_input;
+    /*
+     * Ignore stale pending inputs. Reliable transport keeps ordering, but this
+     * guard protects local queue bursts and future transport changes.
+     */
+    if (server->pending_input.tick_id >= server->current_input.tick_id) {
+      server->current_input = server->pending_input;
+      accepted_pending = true;
+    }
     server->pending_input_available = false;
   }
+
   *out_input = server->current_input;
+
+  /*
+   * Consume one-shot input fields so they are not reapplied on later ticks
+   * when no fresh input packet arrives.
+   *
+   * Held movement buttons remain in current_input and continue to apply until
+   * an updated command is received (matching latest-known-input semantics).
+   */
+  server->current_input.look_delta_x = 0.0f;
+  server->current_input.look_delta_y = 0.0f;
+  server->current_input.buttons &=
+      (uint8_t)~(GAMEPLAY_INPUT_LEFT_CLICK | GAMEPLAY_INPUT_RIGHT_CLICK);
+
+  if (!accepted_pending) {
+    out_input->look_delta_x = 0.0f;
+    out_input->look_delta_y = 0.0f;
+    out_input->buttons &= (uint8_t)~(GAMEPLAY_INPUT_LEFT_CLICK | GAMEPLAY_INPUT_RIGHT_CLICK);
+  }
+
   pthread_mutex_unlock(&server->input_mutex);
+}
+
+static bool server_consume_latest_move(ServerCore *server, NetPlayerMove *out_move) {
+  bool accepted_pending = false;
+
+  if (server == NULL || out_move == NULL) {
+    return false;
+  }
+
+  pthread_mutex_lock(&server->input_mutex);
+  if (server->pending_move_available) {
+    if (server->pending_move.tick_id > server->current_move.tick_id) {
+      server->current_move = server->pending_move;
+      accepted_pending = true;
+    }
+    server->pending_move_available = false;
+  }
+  *out_move = server->current_move;
+  pthread_mutex_unlock(&server->input_mutex);
+  return accepted_pending;
 }
 
 void ServerCore_SubmitInput(ServerCore *server, int client_id, const GameplayInputCmd *input) {
@@ -439,6 +615,19 @@ void ServerCore_SubmitInput(ServerCore *server, int client_id, const GameplayInp
   if (!server->pending_input_available || input->tick_id >= server->pending_input.tick_id) {
     server->pending_input = *input;
     server->pending_input_available = true;
+  }
+  pthread_mutex_unlock(&server->input_mutex);
+}
+
+static void server_submit_move(ServerCore *server, const NetPlayerMove *move) {
+  if (server == NULL || move == NULL) {
+    return;
+  }
+
+  pthread_mutex_lock(&server->input_mutex);
+  if (!server->pending_move_available || move->tick_id >= server->pending_move.tick_id) {
+    server->pending_move = *move;
+    server->pending_move_available = true;
   }
   pthread_mutex_unlock(&server->input_mutex);
 }
@@ -461,6 +650,14 @@ static void server_process_incoming(ServerCore *server) {
       sent_chunk_clear(server);
       memset(&server->current_input, 0, sizeof(server->current_input));
       server->pending_input_available = false;
+      memset(&server->current_move, 0, sizeof(server->current_move));
+      server->pending_move_available = false;
+      server->last_applied_input_tick = 0;
+      server->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
+      server->fly_enabled = false;
+      server->player.gameplay_mode = server->gameplay_mode;
+      server->player.fly_enabled = server->fly_enabled;
+      server_reset_break_state(server);
     } else if (event.type == NET_EVENT_MESSAGE) {
       if (event.message_type == NET_MSG_C2S_HELLO) {
         server->has_client = true;
@@ -471,9 +668,20 @@ static void server_process_incoming(ServerCore *server) {
           server->client_render_distance = (uint32_t)server->config.render_distance;
         }
         sent_chunk_clear(server);
+        memset(&server->current_input, 0, sizeof(server->current_input));
+        server->pending_input_available = false;
+        server->last_applied_input_tick = 0;
+        memset(&server->current_move, 0, sizeof(server->current_move));
+        server->pending_move_available = false;
+        server->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
+        server->fly_enabled = false;
+        server_reset_break_state(server);
         server_send_welcome(server);
+        server_send_player_state(server);
       } else if (event.message_type == NET_MSG_C2S_INPUT_CMD && server->client_ready) {
         ServerCore_SubmitInput(server, 0, &event.payload.input_cmd);
+      } else if (event.message_type == NET_MSG_C2S_PLAYER_MOVE && server->client_ready) {
+        server_submit_move(server, &event.payload.player_move);
       }
     }
   }
@@ -481,6 +689,9 @@ static void server_process_incoming(ServerCore *server) {
 
 void ServerCore_Tick(ServerCore *server) {
   GameplayInputCmd input = {0};
+  NetPlayerMove move = {0};
+  bool has_new_move = false;
+  bool should_send_player_state = false;
 
   if (server == NULL || !ServerCore_IsRunning(server)) {
     return;
@@ -492,12 +703,30 @@ void ServerCore_Tick(ServerCore *server) {
   }
 
   server_consume_latest_input(server, &input);
-  server_update_player(server, &input);
+  if (input.gameplay_mode == (uint8_t)GAMEPLAY_MODE_SURVIVAL) {
+    server->gameplay_mode = GAMEPLAY_MODE_SURVIVAL;
+  } else {
+    server->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
+  }
+  server->fly_enabled =
+      (server->gameplay_mode == GAMEPLAY_MODE_CREATIVE) && (input.fly_enabled != 0u);
+  server->player.gameplay_mode = server->gameplay_mode;
+  server->player.fly_enabled = server->fly_enabled;
+
+  has_new_move = server_consume_latest_move(server, &move);
+  if (has_new_move && !server_apply_client_move(server, &move)) {
+    should_send_player_state = true;
+  }
+
+  server_decay_break_state(server);
+  server->player.selected_block = input.selected_block;
   server_apply_interactions(server, &input);
 
   World_Update(&server->world, server->player.position, 1.0f / (float)server->config.tick_rate);
   server_stream_visible_chunks(server);
-  server_send_player_state(server);
+  if (should_send_player_state || ((server->tick_counter % 20u) == 0u)) {
+    server_send_player_state(server);
+  }
 
   server->tick_counter++;
 }
@@ -609,6 +838,11 @@ bool ServerCore_Init(ServerCore *server, const ServerConfig *config, NetEndpoint
   spawn_y = World_GetTopY(&server->world, 0, 0);
   spawn = (Vector3){0.5f, (float)spawn_y + 2.0f, 0.5f};
   Player_Init(&server->player, spawn);
+  server->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
+  server->fly_enabled = false;
+  server->player.gameplay_mode = server->gameplay_mode;
+  server->player.fly_enabled = server->fly_enabled;
+  server_reset_break_state(server);
 
   return true;
 }
@@ -652,6 +886,7 @@ AuthoritativePlayerState ServerCore_GetAuthoritativePlayerState(ServerCore *serv
   }
 
   state.tick_id = server->tick_counter;
+  state.input_tick_id = server->last_applied_input_tick;
   state.position_x = server->player.position.x;
   state.position_y = server->player.position.y;
   state.position_z = server->player.position.z;
