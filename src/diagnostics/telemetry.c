@@ -1,4 +1,5 @@
 #include "telemetry.h"
+#include "process_stats.h"
 #include <float.h>
 #include <math.h>
 #include <raylib.h>
@@ -8,6 +9,19 @@
 
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include <cimgui.h>
+
+#define GL_VENDOR 0x1F00
+#define GL_RENDERER 0x1F01
+#define GL_VERSION 0x1F02
+#define GL_SHADING_LANGUAGE_VERSION 0x8B8C
+
+#define GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX 0x9047
+#define GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX 0x9048
+#define GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX 0x9049
+#define GL_TEXTURE_FREE_MEMORY_ATI 0x87FC
+
+typedef const unsigned char *(*GLGetStringFunc)(unsigned int);
+typedef void (*GLGetIntegervFunc)(unsigned int, int *);
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -83,12 +97,61 @@ static void collect_cpu_info(SystemInfo *info) {
 }
 
 static void collect_gpu_info(SystemInfo *info) {
-  copy_text(info->gpu_name, sizeof(info->gpu_name), TextFormat("OpenGL GPU"));
-  copy_text(info->gpu_renderer, sizeof(info->gpu_renderer), TextFormat("Renderer"));
-  copy_text(info->opengl_version, sizeof(info->opengl_version), TextFormat("OpenGL 3.3+"));
-  copy_text(info->glsl_version, sizeof(info->glsl_version), TextFormat("GLSL 330+"));
+  GLGetStringFunc glGetStringPtr = (GLGetStringFunc)rlGetProcAddress("glGetString");
+  GLGetIntegervFunc glGetIntegervPtr = (GLGetIntegervFunc)rlGetProcAddress("glGetIntegerv");
+
+  if (glGetStringPtr) {
+    const char *vendor = glGetStringPtr(GL_VENDOR);
+    const char *renderer = glGetStringPtr(GL_RENDERER);
+    const char *version = glGetStringPtr(GL_VERSION);
+    const char *glsl = glGetStringPtr(GL_SHADING_LANGUAGE_VERSION);
+
+    if (vendor && renderer) {
+      copy_text(info->gpu_name, sizeof(info->gpu_name), TextFormat("%s %s", vendor, renderer));
+    } else if (renderer) {
+      copy_text(info->gpu_name, sizeof(info->gpu_name), TextFormat("%s", renderer));
+    } else {
+      copy_text(info->gpu_name, sizeof(info->gpu_name), TextFormat("Unknown GPU"));
+    }
+
+    if (renderer) {
+      copy_text(info->gpu_renderer, sizeof(info->gpu_renderer), TextFormat("%s", renderer));
+    } else {
+      copy_text(info->gpu_renderer, sizeof(info->gpu_renderer), TextFormat("Unknown"));
+    }
+
+    if (version) {
+      copy_text(info->opengl_version, sizeof(info->opengl_version), TextFormat("%s", version));
+    } else {
+      copy_text(info->opengl_version, sizeof(info->opengl_version), TextFormat("Unknown"));
+    }
+
+    if (glsl) {
+      copy_text(info->glsl_version, sizeof(info->glsl_version), TextFormat("%s", glsl));
+    } else {
+      copy_text(info->glsl_version, sizeof(info->glsl_version), TextFormat("Unknown"));
+    }
+  } else {
+    copy_text(info->gpu_name, sizeof(info->gpu_name), TextFormat("Unknown GPU"));
+    copy_text(info->gpu_renderer, sizeof(info->gpu_renderer), TextFormat("Unknown"));
+    copy_text(info->opengl_version, sizeof(info->opengl_version), TextFormat("Unknown"));
+    copy_text(info->glsl_version, sizeof(info->glsl_version), TextFormat("Unknown"));
+  }
 
   info->gpu_memory_mb = -1;
+  if (glGetIntegervPtr) {
+    int dedicated_mb = 0;
+    glGetIntegervPtr(GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX, &dedicated_mb);
+    if (dedicated_mb > 0) {
+      info->gpu_memory_mb = dedicated_mb;
+    } else {
+      int tex_free = 0;
+      glGetIntegervPtr(GL_TEXTURE_FREE_MEMORY_ATI, &tex_free);
+      if (tex_free > 0) {
+        info->gpu_memory_mb = tex_free;
+      }
+    }
+  }
 }
 
 static void collect_os_info(SystemInfo *info) {
@@ -146,6 +209,8 @@ void Telemetry_Init(void) {
   g_telemetry.min_fps = 0.0;
   g_telemetry.max_fps = 0.0;
   g_telemetry.frame_time_ms = 0.0;
+  g_telemetry.process_memory_mb = -1;
+  g_telemetry.process_thread_count = -1;
 }
 
 void Telemetry_Shutdown(void) { memset(&g_telemetry, 0, sizeof(Telemetry)); }
@@ -187,6 +252,15 @@ void Telemetry_Update(float dt) {
     g_telemetry.min_fps = 0.0;
     g_telemetry.max_fps = 0.0;
   }
+
+  ProcessStats proc_stats;
+  ProcessStats_Query(&proc_stats);
+  if (proc_stats.has_memory_mb) {
+    g_telemetry.process_memory_mb = proc_stats.memory_mb;
+  }
+  if (proc_stats.has_thread_count) {
+    g_telemetry.process_thread_count = proc_stats.thread_count;
+  }
 }
 
 void Telemetry_DrawWindow(void) {
@@ -208,6 +282,18 @@ void Telemetry_DrawWindow(void) {
     igText("GPU Memory: %d MB", g_telemetry.system_info.gpu_memory_mb);
   } else {
     igText("GPU Memory: Unknown");
+  }
+
+  igSpacing();
+  igSeparatorText("Process Memory");
+
+  if (g_telemetry.process_memory_mb >= 0) {
+    igText("RAM Usage: %ld MB", g_telemetry.process_memory_mb);
+  } else {
+    igText("RAM Usage: Unknown");
+  }
+  if (g_telemetry.process_thread_count >= 0) {
+    igText("Threads: %d", g_telemetry.process_thread_count);
   }
 
   igSpacing();

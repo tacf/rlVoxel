@@ -25,6 +25,9 @@ typedef struct Telemetry {
   double min_fps;
   double max_fps;
   double frame_time_ms;
+
+  long process_memory_mb;
+  int process_thread_count;
 } Telemetry;
 
 void Telemetry_Init(void);
