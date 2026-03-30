@@ -7,6 +7,7 @@
 
 #include "stb_ds.h"
 #include "constants.h"
+#include "voxel/chunk.h"
 #include "world/blocks.h"
 #include "world/chunk.h"
 #include "world/world.h"
@@ -159,7 +160,7 @@ void Lighting_InitializeChunkSkylight(struct World *world, Chunk *chunk) {
     }
   }
 
-  chunk->mesh_dirty = true;
+  VoxelChunk_SetState(chunk, DIRTY);
 }
 
 void Lighting_RelightColumn(struct World *world, int x, int z) {
@@ -291,7 +292,8 @@ int Lighting_Process(struct World *world, int budget) {
       World_SetSkyLight(world, node.x, node.y, node.z, target);
 
       /* Skip dirty marks while chunks are still in their initial lighting fill. */
-      if (chunk && chunk->generated && !chunk->lighting_dirty) {
+      if (chunk && VoxelChunk_HasState(chunk, GENERATED) &&
+          !VoxelChunk_HasState(chunk, LIGHTDIRTY)) {
         World_MarkChunkDirty(world, cx, cz);
       }
 

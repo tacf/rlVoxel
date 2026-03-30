@@ -1012,9 +1012,9 @@ void WorldGen_GenerateChunk(WorldGen *gen, Chunk *chunk) {
 
   Chunk_RecomputeHeightAll(chunk);
 
-  chunk->generated = true;
-  chunk->mesh_dirty = true;
-  chunk->lighting_dirty = true;
+  VoxelChunk_SetState(chunk, GENERATED);
+  VoxelChunk_SetState(chunk, DIRTY);
+  VoxelChunk_SetState(chunk, LIGHTDIRTY);
 }
 
 static const char *biome_names[] = {"Rainforest", "Swampland", "SeasonalForest", "Forest",

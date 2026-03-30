@@ -1,3 +1,4 @@
+#include "voxel/chunk.h"
 #define STB_DS_IMPLEMENTATION
 #include "world/world.h"
 
@@ -210,13 +211,13 @@ Chunk *World_GetOrCreateChunk(World *world, int cx, int cz) {
     WorldGen_GenerateChunk(&world->generator, chunk);
     Lighting_InitializeChunkSkylight(world, chunk);
   } else {
-    chunk->generated = true;
+    VoxelChunk_SetState(chunk, GENERATED);
   }
 
   int64_t key = make_chunk_key(cx, cz);
   voxel_chunkmap_put(&world->chunks, key, chunk);
 
-  if (world->meshing_enabled && chunk->mesh_dirty) {
+  if (world->meshing_enabled && VoxelChunk_HasState(chunk, DIRTY)) {
     world_enqueue_dirty_chunk_key(world, key, false);
   }
 
@@ -353,7 +354,7 @@ void World_MarkChunkDirty(World *world, int cx, int cz) {
   Chunk *chunk = World_GetChunk(world, cx, cz);
   if (chunk != NULL) {
     if (world->meshing_enabled) {
-      chunk->mesh_dirty = true;
+      VoxelChunk_SetState(chunk, DIRTY);
       world_enqueue_dirty_chunk(world, cx, cz, false);
     }
   }
@@ -363,7 +364,7 @@ void World_MarkChunkDirtyPriority(World *world, int cx, int cz) {
   Chunk *chunk = World_GetChunk(world, cx, cz);
   if (chunk != NULL) {
     if (world->meshing_enabled) {
-      chunk->mesh_dirty = true;
+      VoxelChunk_SetState(chunk, DIRTY);
       world_enqueue_dirty_chunk(world, cx, cz, true);
     }
   }
@@ -758,10 +759,11 @@ void World_Update(World *world, Vector3 player_pos, float dt) {
         break;
       }
       Chunk *chunk = voxel_chunkmap_get(world->chunks, key);
-      if (chunk && chunk->mesh_dirty) {
+      if (chunk && VoxelChunk_HasState(chunk, DIRTY)) {
         WORLD_LOG("Rebuilding chunk (%d, %d)", chunk->cx, chunk->cz);
         Mesher_RebuildChunk(world, chunk, 1.0f);
-        chunk->mesh_dirty = false;
+        VoxelChunk_UnsetState(chunk, DIRTY);
+
         rebuild_budget--;
         rebuilt++;
       }
@@ -968,9 +970,14 @@ bool World_ApplyChunkData(World *world, int cx, int cz, const uint8_t *blocks, s
   memcpy(chunk->blocks, blocks, blocks_size);
   memcpy(chunk->skylight, skylight, skylight_size);
   memcpy(chunk->heightmap, heightmap, heightmap_size);
-  chunk->generated = true;
-  chunk->lighting_dirty = false;
-  chunk->mesh_dirty = world->meshing_enabled;
+
+  VoxelChunk_SetState(chunk, GENERATED);
+  VoxelChunk_UnsetState(chunk, LIGHTDIRTY);
+  if (world->meshing_enabled) {
+    VoxelChunk_SetState(chunk, DIRTY);
+  } else {
+    VoxelChunk_UnsetState(chunk, DIRTY);
+  }
 
   if (world->meshing_enabled) {
     World_MarkChunkDirty(world, cx, cz);

@@ -23,8 +23,8 @@ void VoxelChunk_Init(VoxelChunk *chunk, int cx, int cz) {
   chunk->cz = cz;
   chunk->blocks = (uint8_t *)calloc(VOXEL_CHUNK_VOLUME, sizeof(uint8_t));
   chunk->skylight = (uint8_t *)calloc(VOXEL_CHUNK_LIGHT_BYTES, sizeof(uint8_t));
-  chunk->mesh_dirty = true;
-  chunk->lighting_dirty = true;
+  VoxelChunk_SetState(chunk, DIRTY);
+  VoxelChunk_SetState(chunk, LIGHTDIRTY);
 }
 
 void VoxelChunk_Shutdown(VoxelChunk *chunk, void (*unload_model)(void *)) {
@@ -50,14 +50,20 @@ void VoxelChunk_Shutdown(VoxelChunk *chunk, void (*unload_model)(void *)) {
 
 int VoxelChunk_Index(int lx, int y, int lz) { return (lx << 11) | (lz << 7) | y; }
 
+void VoxelChunk_SetState(VoxelChunk *chunk, uint8_t state) { FLAG_SET(chunk->state, state); }
+void VoxelChunk_UnsetState(VoxelChunk *chunk, uint8_t state) { FLAG_CLEAR(chunk->state, state); }
+bool VoxelChunk_HasState(const VoxelChunk *chunk, uint8_t state) {
+  FLAG_IS_SET(chunk->state, state);
+};
+
 uint8_t VoxelChunk_GetBlock(const VoxelChunk *chunk, int lx, int y, int lz) {
   return chunk->blocks[VoxelChunk_Index(lx, y, lz)];
 }
 
 void VoxelChunk_SetBlock(VoxelChunk *chunk, int lx, int y, int lz, uint8_t block_id) {
   chunk->blocks[VoxelChunk_Index(lx, y, lz)] = block_id;
-  chunk->mesh_dirty = true;
-  chunk->lighting_dirty = true;
+  VoxelChunk_SetState(chunk, DIRTY);
+  VoxelChunk_SetState(chunk, LIGHTDIRTY);
 }
 
 int VoxelChunk_GetSkyLight(const VoxelChunk *chunk, int lx, int y, int lz) {
