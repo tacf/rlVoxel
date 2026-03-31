@@ -55,9 +55,18 @@
 #define GAME_MOVE_VELOCITY_EPSILON 0.0010f
 #define GAME_MOVE_ANGLE_EPSILON 0.0005f
 #define GAME_SURVIVAL_BREAK_PULSE_TICKS 5u
-#define GAME_BREAK_DAMAGE_PER_HIT 1.0f
+
+/*
+ * Local (server idependent) break animation.
+ */
+#define GAME_BREAK_VISUAL_STAGES 10
+#define GAME_BREAK_VISUAL_HOLD_PROGRESS 0.999f
+#define GAME_BREAK_VISUAL_MIN_SECONDS 0.22f
+#define GAME_BREAK_VISUAL_PER_DURABILITY_SECONDS 0.06f
 #define GAME_BREAK_RECOVERY_DELAY_TICKS 10u
 #define GAME_BREAK_RECOVERY_INTERVAL_TICKS 5u
+#define GAME_BREAK_VISUAL_DECAY_STEP 0.14f
+
 #define GAME_BREAK_ACK_TIMEOUT_TICKS 20u
 
 /* Build raylib camera vectors from a player pose (position + yaw/pitch). */
@@ -110,37 +119,6 @@ static void game_reset_break_visual(Game *game) {
   game->break_visual_damage = 0.0f;
   game->break_visual_last_tick = 0u;
   game->break_visual_last_recover_tick = 0u;
-}
-
-static void game_decay_break_visual(Game *game) {
-  uint32_t recovery_start_tick;
-  uint32_t elapsed_recovery_ticks;
-  uint32_t recovery_steps;
-  if (game == NULL || !game->break_visual_active) {
-    return;
-  }
-
-  recovery_start_tick = game->break_visual_last_tick + GAME_BREAK_RECOVERY_DELAY_TICKS;
-  if (game->network_tick_counter < recovery_start_tick) {
-    return;
-  }
-
-  if (game->break_visual_last_recover_tick < recovery_start_tick) {
-    game->break_visual_last_recover_tick = recovery_start_tick;
-  }
-
-  if (game->network_tick_counter <
-      game->break_visual_last_recover_tick + GAME_BREAK_RECOVERY_INTERVAL_TICKS) {
-    return;
-  }
-
-  elapsed_recovery_ticks = game->network_tick_counter - game->break_visual_last_recover_tick;
-  recovery_steps = elapsed_recovery_ticks / GAME_BREAK_RECOVERY_INTERVAL_TICKS;
-  game->break_visual_damage -= (float)recovery_steps * GAME_BREAK_DAMAGE_PER_HIT;
-  game->break_visual_last_recover_tick += recovery_steps * GAME_BREAK_RECOVERY_INTERVAL_TICKS;
-  if (game->break_visual_damage <= 0.0f) {
-    game_reset_break_visual(game);
-  }
 }
 
 static PendingBreakOp *game_find_pending_break(Game *game, int x, int y, int z) {
@@ -370,8 +348,8 @@ static bool game_send_hello(Game *game, int requested_render_distance) {
     if (packet_size == 0u) {
       packet_size = Protocol_HeaderSize();
     }
-    NetProfiler_RecordSend(NET_MSG_C2S_HELLO, sequence, game->network_tick_counter,
-                           packet_size, 0u, 0u);
+    NetProfiler_RecordSend(NET_MSG_C2S_HELLO, sequence, game->network_tick_counter, packet_size, 0u,
+                           0u);
   }
 
   return sent;
@@ -393,8 +371,8 @@ static bool game_send_input(Game *game, const GameplayInputCmd *cmd) {
     if (packet_size == 0u) {
       packet_size = Protocol_HeaderSize();
     }
-    NetProfiler_RecordSend(NET_MSG_C2S_INPUT_CMD, sequence, game->network_tick_counter,
-                           packet_size, 1u, cmd->tick_id);
+    NetProfiler_RecordSend(NET_MSG_C2S_INPUT_CMD, sequence, game->network_tick_counter, packet_size,
+                           1u, cmd->tick_id);
   }
 
   return sent;
@@ -939,21 +917,37 @@ static bool game_raycast_target_block(const Game *game, VoxelRaycastHit *out_hit
          out_hit->hit;
 }
 
-static bool game_register_break_hit(Game *game, const VoxelRaycastHit *hit) {
+static float game_break_visual_duration_seconds(uint8_t block_id) {
   int durability;
 
-  if (game == NULL || hit == NULL || !hit->hit) {
-    return false;
+  durability = Block_GetDurability(block_id);
+  if (durability <= 0) {
+    return 0.0f;
   }
+
+  return Clamp(GAME_BREAK_VISUAL_MIN_SECONDS +
+                   (float)durability * GAME_BREAK_VISUAL_PER_DURABILITY_SECONDS,
+               GAME_BREAK_VISUAL_MIN_SECONDS, 1.20f);
+}
+
+static void game_advance_break_visual(Game *game, const VoxelRaycastHit *hit, float tick_dt) {
+  int durability;
+  float duration_seconds;
+  float progress_step;
+
+  if (game == NULL || hit == NULL || !hit->hit || tick_dt <= 0.0f) {
+    return;
+  }
+
   if (hit->block_id == BLOCK_BEDROCK) {
     game_reset_break_visual(game);
-    return false;
+    return;
   }
 
   durability = Block_GetDurability(hit->block_id);
   if (durability <= 0) {
     game_reset_break_visual(game);
-    return false;
+    return;
   }
 
   if (!game->break_visual_active || game->break_visual_x != hit->block_x ||
@@ -966,12 +960,102 @@ static bool game_register_break_hit(Game *game, const VoxelRaycastHit *hit) {
     game->break_visual_last_recover_tick = 0u;
   }
 
-  game->break_visual_damage += GAME_BREAK_DAMAGE_PER_HIT;
-  game->break_visual_last_tick = game->network_tick_counter;
-  if (game->break_visual_damage >= (float)durability) {
-    game_reset_break_visual(game);
-    return true;
+  duration_seconds = game_break_visual_duration_seconds(hit->block_id);
+  if (duration_seconds <= 0.0f) {
+    return;
   }
+
+  progress_step = tick_dt / duration_seconds;
+  if (!isfinite(progress_step) || progress_step <= 0.0f) {
+    return;
+  }
+
+  game->break_visual_damage =
+      Clamp(game->break_visual_damage + progress_step, 0.0f, GAME_BREAK_VISUAL_HOLD_PROGRESS);
+  game->break_visual_last_tick = game->network_tick_counter;
+}
+
+static void game_decay_break_visual(Game *game) {
+  uint32_t recovery_start_tick;
+  uint32_t elapsed_recovery_ticks;
+  uint32_t recovery_steps;
+
+  if (game == NULL || !game->break_visual_active) {
+    return;
+  }
+
+  recovery_start_tick = game->break_visual_last_tick + GAME_BREAK_RECOVERY_DELAY_TICKS;
+  if (game->network_tick_counter < recovery_start_tick) {
+    return;
+  }
+
+  if (game->break_visual_last_recover_tick < recovery_start_tick) {
+    game->break_visual_last_recover_tick = recovery_start_tick;
+  }
+
+  if (game->network_tick_counter <
+      game->break_visual_last_recover_tick + GAME_BREAK_RECOVERY_INTERVAL_TICKS) {
+    return;
+  }
+
+  elapsed_recovery_ticks = game->network_tick_counter - game->break_visual_last_recover_tick;
+  recovery_steps = elapsed_recovery_ticks / GAME_BREAK_RECOVERY_INTERVAL_TICKS;
+  game->break_visual_damage -= (float)recovery_steps * GAME_BREAK_VISUAL_DECAY_STEP;
+  game->break_visual_last_recover_tick += recovery_steps * GAME_BREAK_RECOVERY_INTERVAL_TICKS;
+
+  if (game->break_visual_damage <= 0.0f) {
+    game_reset_break_visual(game);
+  }
+}
+
+static void game_update_break_visual(Game *game, const VoxelRaycastHit *hit, float tick_dt) {
+  int durability;
+  float duration_seconds;
+  float progress_step;
+
+  if (game == NULL || hit == NULL || !hit->hit || tick_dt <= 0.0f) {
+    return;
+  }
+
+  if (hit->block_id == BLOCK_BEDROCK) {
+    game_reset_break_visual(game);
+    return;
+  }
+
+  durability = Block_GetDurability(hit->block_id);
+  if (durability <= 0) {
+    game_reset_break_visual(game);
+    return;
+  }
+
+  if (!game->break_visual_active || game->break_visual_x != hit->block_x ||
+      game->break_visual_y != hit->block_y || game->break_visual_z != hit->block_z) {
+    game->break_visual_active = true;
+    game->break_visual_x = hit->block_x;
+    game->break_visual_y = hit->block_y;
+    game->break_visual_z = hit->block_z;
+    game->break_visual_damage = 0.0f;
+    game->break_visual_last_recover_tick = 0u;
+  }
+
+  duration_seconds = game_break_visual_duration_seconds(hit->block_id);
+  if (duration_seconds <= 0.0f) {
+    return;
+  }
+
+  progress_step = tick_dt / duration_seconds;
+  if (!isfinite(progress_step) || progress_step <= 0.0f) {
+    return;
+  }
+
+  game->break_visual_damage =
+      Clamp(game->break_visual_damage + progress_step, 0.0f, GAME_BREAK_VISUAL_HOLD_PROGRESS);
+  game->break_visual_last_tick = game->network_tick_counter;
+}
+
+static bool game_register_break_hit(Game *game, const VoxelRaycastHit *hit) {
+  (void)game;
+  (void)hit;
   return false;
 }
 
@@ -992,15 +1076,16 @@ static int game_break_visual_stage(const Game *game) {
     return -1;
   }
 
-  ratio = game->break_visual_damage / (float)durability;
-  ratio = Clamp(ratio, 0.0f, 0.9999f);
-  stage = (int)floorf(ratio * 10.0f);
+  ratio = Clamp(game->break_visual_damage, 0.0f, GAME_BREAK_VISUAL_HOLD_PROGRESS);
+  stage = (int)floorf(ratio * (float)GAME_BREAK_VISUAL_STAGES);
+
   if (stage < 0) {
     stage = 0;
   }
-  if (stage > 9) {
-    stage = 9;
+  if (stage >= GAME_BREAK_VISUAL_STAGES) {
+    stage = GAME_BREAK_VISUAL_STAGES - 1;
   }
+
   return stage;
 }
 
@@ -1021,8 +1106,7 @@ static void game_draw_target_block_highlight(Game *game, const Camera3D *camera)
     break_stage = game_break_visual_stage(game);
     if (break_stage >= 0) {
       SelectionHighlight_DrawDamageOverlay(game->terrain_texture, game->break_visual_x,
-                                           game->break_visual_y, game->break_visual_z,
-                                           break_stage);
+                                           game->break_visual_y, game->break_visual_z, break_stage);
     }
   }
 }
@@ -1391,6 +1475,14 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
   game->player.fly_enabled = game->fly_enabled;
   if (game->gameplay_mode != GAMEPLAY_MODE_SURVIVAL) {
     game_reset_break_visual(game);
+  } else if (!game_is_paused(game) && game->cursor_locked && IsWindowFocused() &&
+             input->left_click_held) {
+    VoxelRaycastHit hit = {0};
+    if (game_raycast_target_block(game, &hit)) {
+      game_update_break_visual(game, &hit, tick_dt);
+    } else {
+      game_reset_break_visual(game);
+    }
   } else {
     game_decay_break_visual(game);
   }
@@ -1456,8 +1548,9 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
         game->last_survival_break_send_tick = gameplay_cmd.tick_id;
       }
       if (optimistic_break_commit) {
-        game_track_optimistic_break(game, optimistic_break_hit.block_x, optimistic_break_hit.block_y,
-                                    optimistic_break_hit.block_z, gameplay_cmd.tick_id);
+        game_track_optimistic_break(game, optimistic_break_hit.block_x,
+                                    optimistic_break_hit.block_y, optimistic_break_hit.block_z,
+                                    gameplay_cmd.tick_id);
       }
     }
     game_predict_local_player(game, &gameplay_cmd, tick_dt);
@@ -1519,10 +1612,9 @@ void Game_ApplyFrameLook(Game *game, GameInputSnapshot *frame_input) {
 void Game_Draw(Game *game, float alpha) {
   Profiler_BeginSection("Render");
 
-  int snap_downscale =
-      (game->pixel_look_enabled && game->renderer.pixelate_downscale > 1)
-          ? game->renderer.pixelate_downscale
-          : 1;
+  int snap_downscale = (game->pixel_look_enabled && game->renderer.pixelate_downscale > 1)
+                           ? game->renderer.pixelate_downscale
+                           : 1;
   float snap_width = (float)((GetScreenWidth() + snap_downscale - 1) / snap_downscale);
   float snap_height = (float)((GetScreenHeight() + snap_downscale - 1) / snap_downscale);
   Mesher_SetGeometryPixelSnapResolution(snap_width, snap_height);
@@ -1618,8 +1710,7 @@ void Game_DrawHUD(Game *game) {
       }
       DrawRectangleLinesEx(pixel_cb_rect, 2.0f * scale, WHITE);
       DrawTextEx(game->font, "Pixel Look",
-                 (Vector2){btn_x + cb_size + 10.0f * scale,
-                           cursor_y + (cb_size - font_btn) * 0.5f},
+                 (Vector2){btn_x + cb_size + 10.0f * scale, cursor_y + (cb_size - font_btn) * 0.5f},
                  font_btn, 1.0f, WHITE);
 
       if (CheckCollisionPointRec(GetMousePosition(), pixel_cb_rect) &&

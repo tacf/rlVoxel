@@ -6,6 +6,7 @@
 #include "game/raycast.h"
 #include "raylib.h"
 #include "rlgl.h"
+#include "raymath.h"
 
 typedef struct SelectionFaceAxes {
   int normal_axis;
@@ -156,13 +157,61 @@ void SelectionHighlight_Draw(const VoxelRaycastHit *hit) {
   }
 }
 
+static void selection_overlay_vertex(Vector3 p, Vector3 n, float u, float v,
+                                     unsigned char alpha) {
+  rlNormal3f(n.x, n.y, n.z);
+  rlTexCoord2f(u, v);
+  rlColor4ub(255, 255, 255, alpha);
+  rlVertex3f(p.x, p.y, p.z);
+}
+
+static void selection_overlay_quad(Texture2D texture, Vector3 p0, Vector3 p1, Vector3 p2,
+                                   Vector3 p3, Vector3 normal, float u0, float v0, float u1,
+                                   float v1, unsigned char alpha) {
+  (void)texture;
+
+  Vector3 e1 = {p1.x - p0.x, p1.y - p0.y, p1.z - p0.z};
+  Vector3 e2 = {p2.x - p0.x, p2.y - p0.y, p2.z - p0.z};
+  Vector3 face_normal = {
+      e1.y * e2.z - e1.z * e2.y,
+      e1.z * e2.x - e1.x * e2.z,
+      e1.x * e2.y - e1.y * e2.x,
+  };
+
+  float alignment = face_normal.x * normal.x +
+                    face_normal.y * normal.y +
+                    face_normal.z * normal.z;
+
+  if (alignment >= 0.0f) {
+    /* Triangle 1: p0, p1, p2 */
+    selection_overlay_vertex(p0, normal, u0, v0, alpha);
+    selection_overlay_vertex(p1, normal, u1, v0, alpha);
+    selection_overlay_vertex(p2, normal, u1, v1, alpha);
+
+    /* Triangle 2: p0, p2, p3 */
+    selection_overlay_vertex(p0, normal, u0, v0, alpha);
+    selection_overlay_vertex(p2, normal, u1, v1, alpha);
+    selection_overlay_vertex(p3, normal, u0, v1, alpha);
+  } else {
+    /* Flipped winding */
+    selection_overlay_vertex(p0, normal, u0, v0, alpha);
+    selection_overlay_vertex(p2, normal, u1, v1, alpha);
+    selection_overlay_vertex(p1, normal, u1, v0, alpha);
+
+    selection_overlay_vertex(p0, normal, u0, v0, alpha);
+    selection_overlay_vertex(p3, normal, u0, v1, alpha);
+    selection_overlay_vertex(p2, normal, u1, v1, alpha);
+  }
+}
+
 void SelectionHighlight_DrawDamageOverlay(Texture2D terrain_texture, int block_x, int block_y,
                                           int block_z, int crack_stage) {
-  Rectangle source;
-  float min_x, min_y, min_z;
-  float max_x, max_y, max_z;
-  float u0, v0, u1, v1;
   int stage = crack_stage;
+  float u0, v0, u1, v1;
+  float x0, y0, z0;
+  float x1, y1, z1;
+  const float face_offset = 0.01f;
+  const unsigned char alpha = 210;
 
   if (terrain_texture.id == 0) {
     return;
@@ -175,90 +224,61 @@ void SelectionHighlight_DrawDamageOverlay(Texture2D terrain_texture, int block_x
     stage = 9;
   }
 
-  source = (Rectangle){
-      .x = (float)stage * 16.0f,
-      .y = 15.0f * 16.0f,
-      .width = 16.0f,
-      .height = 16.0f,
-  };
-  min_x = (float)block_x - 0.002f;
-  min_y = (float)block_y - 0.002f;
-  min_z = (float)block_z - 0.002f;
-  max_x = (float)block_x + 1.002f;
-  max_y = (float)block_y + 1.002f;
-  max_z = (float)block_z + 1.002f;
+  u0 = ((float)stage * 16.0f) / (float)terrain_texture.width;
+  v0 = (15.0f * 16.0f) / (float)terrain_texture.height;
+  u1 = (((float)stage * 16.0f) + 16.0f) / (float)terrain_texture.width;
+  v1 = ((15.0f * 16.0f) + 16.0f) / (float)terrain_texture.height;
 
-  u0 = source.x / (float)terrain_texture.width;
-  v0 = source.y / (float)terrain_texture.height;
-  u1 = (source.x + source.width) / (float)terrain_texture.width;
-  v1 = (source.y + source.height) / (float)terrain_texture.height;
+  x0 = (float)block_x;
+  y0 = (float)block_y;
+  z0 = (float)block_z;
+  x1 = x0 + 1.0f;
+  y1 = y0 + 1.0f;
+  z1 = z0 + 1.0f;
 
   rlDisableBackfaceCulling();
+  rlDisableDepthMask();
   rlSetTexture(terrain_texture.id);
-  rlBegin(RL_QUADS);
-  rlColor4ub(255, 255, 255, 210);
+  rlBegin(RL_TRIANGLES);
 
   /* Bottom (-Y) */
-  rlTexCoord2f(u0, v0);
-  rlVertex3f(min_x, min_y, min_z);
-  rlTexCoord2f(u1, v0);
-  rlVertex3f(max_x, min_y, min_z);
-  rlTexCoord2f(u1, v1);
-  rlVertex3f(max_x, min_y, max_z);
-  rlTexCoord2f(u0, v1);
-  rlVertex3f(min_x, min_y, max_z);
+  selection_overlay_quad(
+      terrain_texture, (Vector3){x0, y0 - face_offset, z0}, (Vector3){x1, y0 - face_offset, z0},
+      (Vector3){x1, y0 - face_offset, z1}, (Vector3){x0, y0 - face_offset, z1},
+      (Vector3){0.0f, -1.0f, 0.0f}, u0, v0, u1, v1, alpha);
 
   /* Top (+Y) */
-  rlTexCoord2f(u0, v0);
-  rlVertex3f(min_x, max_y, max_z);
-  rlTexCoord2f(u1, v0);
-  rlVertex3f(max_x, max_y, max_z);
-  rlTexCoord2f(u1, v1);
-  rlVertex3f(max_x, max_y, min_z);
-  rlTexCoord2f(u0, v1);
-  rlVertex3f(min_x, max_y, min_z);
+  selection_overlay_quad(
+      terrain_texture, (Vector3){x0, y1 + face_offset, z1}, (Vector3){x1, y1 + face_offset, z1},
+      (Vector3){x1, y1 + face_offset, z0}, (Vector3){x0, y1 + face_offset, z0},
+      (Vector3){0.0f, 1.0f, 0.0f}, u0, v0, u1, v1, alpha);
 
   /* North (-Z) */
-  rlTexCoord2f(u0, v0);
-  rlVertex3f(min_x, min_y, min_z);
-  rlTexCoord2f(u1, v0);
-  rlVertex3f(max_x, min_y, min_z);
-  rlTexCoord2f(u1, v1);
-  rlVertex3f(max_x, max_y, min_z);
-  rlTexCoord2f(u0, v1);
-  rlVertex3f(min_x, max_y, min_z);
+  selection_overlay_quad(
+      terrain_texture, (Vector3){x0, y0, z0 - face_offset}, (Vector3){x1, y0, z0 - face_offset},
+      (Vector3){x1, y1, z0 - face_offset}, (Vector3){x0, y1, z0 - face_offset},
+      (Vector3){0.0f, 0.0f, -1.0f}, u0, v0, u1, v1, alpha);
 
   /* South (+Z) */
-  rlTexCoord2f(u0, v0);
-  rlVertex3f(max_x, min_y, max_z);
-  rlTexCoord2f(u1, v0);
-  rlVertex3f(min_x, min_y, max_z);
-  rlTexCoord2f(u1, v1);
-  rlVertex3f(min_x, max_y, max_z);
-  rlTexCoord2f(u0, v1);
-  rlVertex3f(max_x, max_y, max_z);
+  selection_overlay_quad(
+      terrain_texture, (Vector3){x1, y0, z1 + face_offset}, (Vector3){x0, y0, z1 + face_offset},
+      (Vector3){x0, y1, z1 + face_offset}, (Vector3){x1, y1, z1 + face_offset},
+      (Vector3){0.0f, 0.0f, 1.0f}, u0, v0, u1, v1, alpha);
 
   /* West (-X) */
-  rlTexCoord2f(u0, v0);
-  rlVertex3f(min_x, min_y, max_z);
-  rlTexCoord2f(u1, v0);
-  rlVertex3f(min_x, min_y, min_z);
-  rlTexCoord2f(u1, v1);
-  rlVertex3f(min_x, max_y, min_z);
-  rlTexCoord2f(u0, v1);
-  rlVertex3f(min_x, max_y, max_z);
+  selection_overlay_quad(
+      terrain_texture, (Vector3){x0 - face_offset, y0, z1}, (Vector3){x0 - face_offset, y0, z0},
+      (Vector3){x0 - face_offset, y1, z0}, (Vector3){x0 - face_offset, y1, z1},
+      (Vector3){-1.0f, 0.0f, 0.0f}, u0, v0, u1, v1, alpha);
 
   /* East (+X) */
-  rlTexCoord2f(u0, v0);
-  rlVertex3f(max_x, min_y, min_z);
-  rlTexCoord2f(u1, v0);
-  rlVertex3f(max_x, min_y, max_z);
-  rlTexCoord2f(u1, v1);
-  rlVertex3f(max_x, max_y, max_z);
-  rlTexCoord2f(u0, v1);
-  rlVertex3f(max_x, max_y, min_z);
+  selection_overlay_quad(
+      terrain_texture, (Vector3){x1 + face_offset, y0, z0}, (Vector3){x1 + face_offset, y0, z1},
+      (Vector3){x1 + face_offset, y1, z1}, (Vector3){x1 + face_offset, y1, z0},
+      (Vector3){1.0f, 0.0f, 0.0f}, u0, v0, u1, v1, alpha);
 
   rlEnd();
   rlSetTexture(0);
+  rlEnableDepthMask();
   rlEnableBackfaceCulling();
 }
