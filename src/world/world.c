@@ -828,13 +828,13 @@ static void collect_visible_chunks(World *world, int cam_cx, int cam_cz, float c
     float cz = (float)(chunk->cz * WORLD_CHUNK_SIZE_Z) + WORLD_CHUNK_SIZE_Z * 0.5f;
     float dist_sq = (cx - cam_x) * (cx - cam_x) + (cz - cam_z) * (cz - cam_z);
 
-    if (chunk->has_solid_model && chunk->solid_model)
+    if (VoxelChunk_HasRenderPass(chunk, SOLID) && chunk->solid_model)
       arrput(g_solid_draw_entries, ((ChunkSortEntry){chunk, dist_sq}));
-    if (chunk->has_cutout_model && chunk->cutout_model)
+    if (VoxelChunk_HasRenderPass(chunk, CUTOUT) && chunk->cutout_model)
       arrput(g_cutout_draw_entries, ((ChunkSortEntry){chunk, dist_sq}));
-    if (chunk->has_translucent_solid_model && chunk->translucent_solid_model)
+    if (VoxelChunk_HasRenderPass(chunk, TRANSLUCENT_SOLID) && chunk->translucent_solid_model)
       arrput(g_translucent_solid_draw_entries, ((ChunkSortEntry){chunk, dist_sq}));
-    if (chunk->has_translucent_model && chunk->translucent_model)
+    if (VoxelChunk_HasRenderPass(chunk, TRANSLUCENT) && chunk->translucent_model)
       arrput(g_translucent_draw_entries, ((ChunkSortEntry){chunk, dist_sq}));
   }
 }

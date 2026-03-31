@@ -29,16 +29,16 @@ void VoxelChunk_Init(VoxelChunk *chunk, int cx, int cz) {
 
 void VoxelChunk_Shutdown(VoxelChunk *chunk, void (*unload_model)(void *)) {
   if (unload_model) {
-    if (chunk->has_solid_model && chunk->solid_model) {
+    if (VoxelChunk_HasRenderPass(chunk, SOLID) && chunk->solid_model) {
       unload_model(chunk->solid_model);
     }
-    if (chunk->has_translucent_model && chunk->translucent_model) {
+    if (VoxelChunk_HasRenderPass(chunk, TRANSLUCENT) && chunk->translucent_model) {
       unload_model(chunk->translucent_model);
     }
-    if (chunk->has_cutout_model && chunk->cutout_model) {
+    if (VoxelChunk_HasRenderPass(chunk, CUTOUT) && chunk->cutout_model) {
       unload_model(chunk->cutout_model);
     }
-    if (chunk->has_translucent_solid_model && chunk->translucent_solid_model) {
+    if (VoxelChunk_HasRenderPass(chunk, TRANSLUCENT_SOLID) && chunk->translucent_solid_model) {
       unload_model(chunk->translucent_solid_model);
     }
   }
@@ -51,9 +51,21 @@ void VoxelChunk_Shutdown(VoxelChunk *chunk, void (*unload_model)(void *)) {
 int VoxelChunk_Index(int lx, int y, int lz) { return (lx << 11) | (lz << 7) | y; }
 
 void VoxelChunk_SetState(VoxelChunk *chunk, uint8_t state) { FLAG_SET(chunk->state, state); }
-void VoxelChunk_UnsetState(VoxelChunk *chunk, uint8_t state) { FLAG_CLEAR(chunk->state, state); }
+void VoxelChunk_UnsetState(VoxelChunk *chunk, uint8_t state) {
+  FLAG_CLEAR(chunk->state, state);
+}
 bool VoxelChunk_HasState(const VoxelChunk *chunk, uint8_t state) {
-  FLAG_IS_SET(chunk->state, state);
+  return FLAG_IS_SET(chunk->state, state);
+};
+
+void VoxelChunk_EnableRenderPass(VoxelChunk *chunk, uint8_t pass) {
+  FLAG_SET(chunk->passes, pass);
+}
+void VoxelChunk_DisableRenderPass(VoxelChunk *chunk, uint8_t pass) {
+  FLAG_CLEAR(chunk->passes, pass);
+}
+bool VoxelChunk_HasRenderPass(const VoxelChunk *chunk, uint8_t pass) {
+  return FLAG_IS_SET(chunk->passes, pass);
 };
 
 uint8_t VoxelChunk_GetBlock(const VoxelChunk *chunk, int lx, int y, int lz) {

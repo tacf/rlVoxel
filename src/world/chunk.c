@@ -7,22 +7,22 @@
 
 void Chunk_Shutdown(Chunk *chunk) {
   /* Unload raylib models */
-  if (chunk->has_solid_model && chunk->solid_model) {
+  if (VoxelChunk_HasRenderPass(chunk, SOLID) && chunk->solid_model) {
     UnloadModel(*(Model *)chunk->solid_model);
     free(chunk->solid_model);
     chunk->solid_model = NULL;
   }
-  if (chunk->has_translucent_model && chunk->translucent_model) {
+  if (VoxelChunk_HasRenderPass(chunk, TRANSLUCENT) && chunk->translucent_model) {
     UnloadModel(*(Model *)chunk->translucent_model);
     free(chunk->translucent_model);
     chunk->translucent_model = NULL;
   }
-  if (chunk->has_cutout_model && chunk->cutout_model) {
+  if (VoxelChunk_HasRenderPass(chunk, CUTOUT) && chunk->cutout_model) {
     UnloadModel(*(Model *)chunk->cutout_model);
     free(chunk->cutout_model);
     chunk->cutout_model = NULL;
   }
-  if (chunk->has_translucent_solid_model && chunk->translucent_solid_model) {
+  if (VoxelChunk_HasRenderPass(chunk, TRANSLUCENT_SOLID) && chunk->translucent_solid_model) {
     UnloadModel(*(Model *)chunk->translucent_solid_model);
     free(chunk->translucent_solid_model);
     chunk->translucent_solid_model = NULL;

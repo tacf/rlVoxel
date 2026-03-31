@@ -1,4 +1,5 @@
 #include "world/mesher.h"
+#include "voxel/chunk.h"
 #include "world/world.h"
 #include "world/blocks.h"
 #include "world/chunk.h"
@@ -156,27 +157,27 @@ static void assign_model_to_chunk(World *world, VoxelMeshData *mesh_data, Chunk 
                                   bool translucent_solid, bool water) {
   /* Free existing model */
   void **model_ptr;
-  bool *has_model;
+  bool has_model;
 
   if (cutout) {
     model_ptr = &chunk->cutout_model;
-    has_model = &chunk->has_cutout_model;
+    has_model = VoxelChunk_HasRenderPass(chunk, CUTOUT);
   } else if (translucent_solid) {
     model_ptr = &chunk->translucent_solid_model;
-    has_model = &chunk->has_translucent_solid_model;
+    has_model = VoxelChunk_HasRenderPass(chunk, TRANSLUCENT_SOLID);
   } else if (water) {
     model_ptr = &chunk->translucent_model;
-    has_model = &chunk->has_translucent_model;
+    has_model = VoxelChunk_HasRenderPass(chunk, TRANSLUCENT);
   } else {
     model_ptr = &chunk->solid_model;
-    has_model = &chunk->has_solid_model;
+    has_model = VoxelChunk_HasRenderPass(chunk, SOLID);
   }
 
-  if (*has_model && *model_ptr) {
+  if (has_model && *model_ptr) {
     UnloadModel(*(Model *)*model_ptr);
     free(*model_ptr);
     *model_ptr = NULL;
-    *has_model = false;
+    has_model = false;
   }
 
   if (mesh_data->vertex_count == 0) {
@@ -230,7 +231,17 @@ static void assign_model_to_chunk(World *world, VoxelMeshData *mesh_data, Chunk 
   }
   *allocated_model = model;
   *model_ptr = allocated_model;
-  *has_model = true;
+  if (!has_model) {
+    if (cutout) {
+      VoxelChunk_EnableRenderPass(chunk, CUTOUT);
+    } else if (translucent_solid) {
+      VoxelChunk_EnableRenderPass(chunk, TRANSLUCENT_SOLID);
+    } else if (water) {
+      VoxelChunk_EnableRenderPass(chunk, TRANSLUCENT);
+    } else {
+      VoxelChunk_EnableRenderPass(chunk, SOLID);
+    }
+  }
 }
 
 void Mesher_RebuildChunk(struct World *world, Chunk *chunk, float ambient_multiplier) {
