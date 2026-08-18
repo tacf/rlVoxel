@@ -2,24 +2,24 @@
 
 ## Overview
 
-The voxel renderer uses a multi-pass pipeline model. Each pass draws a category 
-of blocks with its own GL state, shader, and sort order. The passes execute in 
+The voxel renderer uses a multi-pass pipeline model. Each pass draws a category
+of blocks with its own GL state, shader, and sort order. The passes execute in
 strict order because later passes depend on the depth buffer written by earlier ones.
 
 Pass order (must not be reordered):
 
-| # | Pass               | Blocks              | Depth Write | Blending | Sort         |
-|---|--------------------|---------------------|-------------|----------|--------------|
-| 1 | Solid              | Opaque terrain      | ON          | OFF      | Front→back   |
-| 2 | Cutout             | Leaves, plants      | ON          | OFF*     | Back→front   |
-| 3 | Translucent Solid  | Ice, glass          | ON          | Alpha    | Front→back   |
-| 4 | Water              | Water, lava         | **OFF**     | Alpha    | Back→front   |
+| #   | Pass              | Blocks         | Depth Write | Blending | Sort       |
+| --- | ----------------- | -------------- | ----------- | -------- | ---------- |
+| 1   | Solid             | Opaque terrain | ON          | OFF      | Front→back |
+| 2   | Cutout            | Leaves, plants | ON          | OFF\*    | Back→front |
+| 3   | Translucent Solid | Ice, glass     | ON          | Alpha    | Front→back |
+| 4   | Water             | Water, lava    | **OFF**     | Alpha    | Back→front |
 
 \* Cutout has blending enabled in GL but output alpha is 1.0, so it's a no-op.
 
 ## Pass 1: Solid
 
-**Blocks:** Stone, dirt, grass, sand, bedrock, logs, sandstone — anything where
+**Blocks:** Stone, dirt, grass, sand, bedrock, logs, sandstone: anything where
 `VoxelBlockDef.opaque == true`.
 
 **Shader:** `opaque_ao` (`assets/shaders/*/opaque_ao.*`)
@@ -27,10 +27,10 @@ Pass order (must not be reordered):
 - Samples terrain atlas (`texture0`).
 - Multiplies `texel.rgb` by `vertexColor.rgb` (face brightness + skylight from
   mesher) and `colDiffuse.rgb` (ambient tint).
-- `vertexColor.a` encodes baked ambient occlusion (0–1 per corner). The shader
+- `vertexColor.a` encodes baked ambient occlusion (0-1 per corner). The shader
   remaps it through `uAoMin`/`uAoCurve` to darken creases without crushing
   highlights.
-- Output alpha is forced to `1.0` — solid pixels never blend.
+- Output alpha is forced to `1.0`, so solid pixels never blend.
 
 **GL state:**
 
@@ -40,7 +40,7 @@ Pass order (must not be reordered):
   is always 1.0 so blending is a no-op).
 - Face cull: ON, back faces (`rlEnableBackfaceCulling`).
 
-**Sort:** Front-to-back (nearest chunk first). This is an early-Z optimization —
+**Sort:** Front-to-back (nearest chunk first). This is an early-Z optimization:
 the GPU's hierarchical-Z can reject distant fragments before the fragment shader
 runs.
 
@@ -74,16 +74,16 @@ with `VoxelBlockDef.opacity <= 1` goes here.
 **Sort:** Back-to-front. In practice the sort doesn't matter much for cutout (no
 blending), but it's kept consistent with the translucent convention.
 
-**Nuance — why not use the translucent shader here?**
-The cutout shader skips `colDiffuse` multiplication. Raylib's `DrawMesh()`
-uploads `colDiffuse` from the material color, but the cutout blocks have been
-tinted per-vertex already (face brightness * skylight * block tint). Using
-`colDiffuse` as well would double-apply the ambient multiplier. The cutout
-shader avoids this by only using the vertex color.
+**Why not use the translucent shader here?**
+The cutout shader skips `colDiffuse` multiplication on purpose. Raylib's
+`DrawMesh()` uploads `colDiffuse` from the material color, but cutout blocks
+are already tinted per-vertex (face brightness _ skylight _ block tint), so
+adding `colDiffuse` on top would double-apply the ambient multiplier. Using
+only the vertex color avoids that.
 
 ## Pass 3: Translucent Solid (depth-write translucent)
 
-**Blocks:** Ice, glass — blocks that are see-through but should act as solid
+**Blocks:** Ice, glass: see-through blocks that should still act as solid
 surfaces for depth purposes. The mesher routes blocks with
 `VoxelBlockDef.translucent == true` AND `block_id == 79` (ice) here.
 
@@ -104,11 +104,11 @@ surfaces for depth purposes. The mesher routes blocks with
   mode.
 - Face cull: OFF. Ice is see-through from both sides.
 
-**Sort:** Front-to-back. This is unusual for translucent — normally translucent
-is sorted back-to-front for correct blending. However, since ice writes depth,
-front-to-back gives early-Z rejection for distant ice fragments while still
-compositing correctly (the closest ice fragment wins the depth test and writes
-its blended color).
+**Sort:** Front-to-back, which is unusual for translucent geometry (normally
+sorted back-to-front for correct blending). Since ice writes depth here,
+front-to-back still gives early-Z rejection for distant ice fragments while
+compositing correctly: the closest ice fragment wins the depth test and writes
+its blended color.
 
 **Vertex alpha:** 230/255. Combined with model tint alpha (255) and texture
 alpha, this gives ~90% opacity.
@@ -117,8 +117,8 @@ alpha, this gives ~90% opacity.
 
 `DrawMesh()` sets the shader's `matModel`, `matView`, `matProjection`, and `mvp`
 uniforms automatically from the current rlgl matrix stack. Our translucent shader
-uses the combined `uniform mat4 mvp` — raylib resolves this via
-`SHADER_LOC_MATRIX_MVP` which it sets to `matModelView * matProjection`.
+uses the combined `uniform mat4 mvp`, which raylib resolves via
+`SHADER_LOC_MATRIX_MVP`, setting it to `matModelView * matProjection`.
 
 `DrawMesh` also uploads `colDiffuse` from the material's diffuse map color.
 `DrawModel` sets this by multiplying the material's base color by the tint Color
@@ -134,7 +134,7 @@ Since our material base color is WHITE (255,255,255,255) from
 
 ## Pass 4: Water (no-depth-write translucent)
 
-**Blocks:** Water, lava — liquid blocks. The mesher routes all remaining
+**Blocks:** Water, lava: liquid blocks. The mesher routes all remaining
 translucent blocks (opacity > 1, not ice) here.
 
 **Shader:** `translucent` (same as pass 3).
@@ -162,12 +162,12 @@ If sorting were wrong (front-to-back), the nearest water would write first and
 farther water behind it would blend with the already-written nearest water,
 producing a "washed out" double-blended appearance.
 
-### Face culling — water vs ice boundaries
+### Face culling: water vs ice boundaries
 
 The mesher only generates water faces where the neighbor is AIR. Water faces
-against ice, opaque blocks, and other water are culled. This means water never
-produces faces at ice-water boundaries — only ice does. This prevents coplanar
-faces that would z-fight between the two render passes.
+against ice, opaque blocks, and other water are culled, so water never
+produces faces at ice-water boundaries; only ice does. That keeps coplanar
+faces from z-fighting between the two render passes.
 
 ### Water surface height
 
@@ -187,7 +187,7 @@ When `DrawModel()` is called, raylib internally:
 
 3. `DrawMesh()` binds the shader and uploads uniforms:
    - `colDiffuse` (`SHADER_LOC_COLOR_DIFFUSE`): material color as vec4,
-     normalized to 0–1 range.
+     normalized to the 0-1 range.
    - `matModel` (`SHADER_LOC_MATRIX_MODEL`): the model transform (position +
      scale from DrawModel's arguments, combined with rlgl's internal matrix
      stack from BeginMode3D).
@@ -207,7 +207,7 @@ names (`"mvp"`, `"texture0"`, `"colDiffuse"`, etc.) are automatically mapped to
 `GetShaderLocation()`.
 
 The `opaque_ao` shader uses custom uniforms `uAoMin` and `uAoCurve` that raylib
-doesn't auto-resolve — these are set explicitly via `GetShaderLocation()` +
+doesn't auto-resolve; these get set explicitly via `GetShaderLocation()` +
 `SetShaderValue()` at shader load time.
 
 ## Blend Mode Notes
@@ -231,29 +231,28 @@ behind it.
 For water (src_alpha ~0.47): the background shows through strongly, tinted by
 the water color.
 
-The blend mode is global GL state — it applies to all draw calls until changed.
-We don't explicitly set it because raylib's default is `BLEND_ALPHA` and that's
+The blend mode is global GL state: it applies to all draw calls until changed.
+We don't explicitly set it because raylib's default is `BLEND_ALPHA`, which is
 what we need. For additive or multiplicative blending, wrap with
 `BeginBlendMode()` / `EndBlendMode()`.
 
 ## Face Culling Rules (mesher)
 
-| Block | Neighbor        | Face rendered? |
-|-------|-----------------|----------------|
-| Solid | Same type       | No             |
-| Solid | Opaque          | No             |
-| Solid | Air/translucent | Yes            |
-| Cutout| Opaque          | No             |
-| Cutout| Anything else   | Yes            |
-| Ice   | Same type (ice) | No             |
-| Ice   | Opaque          | No             |
-| Ice   | Air/water/other | Yes            |
-| Water | Air             | Yes            |
-| Water | Anything else   | No             |
+| Block  | Neighbor        | Face rendered? |
+| ------ | --------------- | -------------- |
+| Solid  | Same type       | No             |
+| Solid  | Opaque          | No             |
+| Solid  | Air/translucent | Yes            |
+| Cutout | Opaque          | No             |
+| Cutout | Anything else   | Yes            |
+| Ice    | Same type (ice) | No             |
+| Ice    | Opaque          | No             |
+| Ice    | Air/water/other | Yes            |
+| Water  | Air             | Yes            |
+| Water  | Anything else   | No             |
 
 Water never generates faces at ice-water boundaries. Only ice does. This
 prevents coplanar faces between the two render passes that would z-fight.
-
 
 ## Notes
 

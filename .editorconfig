@@ -1,0 +1,14 @@
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+max_line_length = 80
+
+
+[*.{c,h,cpp,hpp,md}]
+indent_style = space
+indent_size = 2
+
+[{Makefile,**.mk}]
+indent_style = tab

@@ -1,99 +1,119 @@
 # UI Tech Details
 
-Game UI is built on a separate custom built Library Framework that's highly inspired by the amazing job that
-Nic Barker has done with [Clay](https://github.com/nicbarker/clay). Initially the intention was to use that
-explicitly but that would defeat the purpose of learning how to do it so i kind went the direction of "rebuilding"
-some of the work Nic does. Main difference would be that this is a retained mode first library instead of 
-immediate mode one like _Clay_ (Although _Clay_ does support retained mode so if you need a layout lib i highly recommend it).
+Game UI runs on [Clay](https://github.com/nicbarker/clay), a single-header
+immediate-mode layout library, plus a small raylib renderer and a
+retained-mode caching layer for the parts of the HUD that don't change every
+frame. rlvoxel used to have its own homegrown, Clay-inspired layout library
+(`libui/`); it's gone now that Clay does the same job without us having to
+own a flex solver's edge cases ourselves.
 
 ## Quick Overview
 
-The UI stack is split into two layers:
+The UI stack has three layers:
 
-- Generic retained-mode UI library in `libui/`.
-- Game-specific UI building in `src/ui/hud.*`.
+- Clay itself (`clay.h`, vendored via CMake `FetchContent`, pinned to `v0.14`)
+  handles layout solving (row/column flex, padding, gap, alignment, sizing)
+  and produces a flat `Clay_RenderCommandArray` each frame.
+- A generic Clay -> raylib renderer in `src/ui/clay_render.*` turns that
+  render command array into `DrawRectangleRec`/`DrawTextEx`/`DrawTexturePro`/
+  scissor calls. Stateless, reusable for any Clay layout.
+- Game-specific UI building in `src/ui/hud.*` declares the actual HUD
+  elements (info panel + hotbar) and owns the hotbar's retained-mode texture
+  cache.
 
-In `Game_DrawHUD()` in `src/game/game.c` you can see how the UI is built:
+`Game_DrawHUD()` in `src/game/game.c` ties it together:
 
-1. Begin UI frame.
-2. Build retained HUD panel content (info panel + hotbar).
-  2.x Insert all logic and building function calls tree to actually build the UI
-3. End UI frame (layout + state update + ordered command flush/batching).
+1. `Clay_SetLayoutDimensions()` / `Clay_SetPointerState()` feed this frame's
+   screen size and pointer state to Clay.
+2. `Clay_BeginLayout()`, declare the HUD tree (`HUD_BuildInfoPanel()`,
+   `HUD_BuildHotbar()`), then `Clay_EndLayout()`. This is Clay's layout pass,
+   and it's unavoidably immediate mode: the whole element tree gets
+   redeclared every frame or the flex solver has nothing to work with.
+3. `ClayRender_Draw()` turns the resulting render commands into raylib draw
+   calls.
+4. `HUD_DrawHotbar()` draws the hotbar's cached background texture plus the
+   per-slot block icons on top (see "Retained Hotbar background" below).
 
-The debug menu is separate from this stack and uses ImGui (see `game_draw_debug_ui()` in `src/game/game.c`).
+The debug menu lives outside this stack entirely and uses ImGui (see
+`game_draw_debug_ui()` in `src/game/game.c`).
 
-## About the UI Library
+## Font Rendering
 
-Owns:
+`src/ui/font_atlas.c` builds the game's `Font` straight from `stb_truetype`
+instead of going through raylib's `LoadFontEx()`. raylib scales its glyph
+atlas with `stbtt_ScaleForPixelHeight()`, which distorts pixel/bitmap-style
+fonts (see [raylib#5678](https://github.com/raysan5/raylib/issues/5678)).
+`FontAtlas_Load()` uses `stbtt_PackFontRange()` with `STBTT_POINT_SIZE()`
+instead, scaling via `stbtt_ScaleForMappingEmToPixels()`. The result is a
+plain raylib `Font` (same `baseSize`/`recs`/`glyphs`/`texture` shape
+`LoadFontEx` would give you), so `DrawTextEx`/`MeasureTextEx`/`UnloadFont`
+keep working untouched everywhere, including the raw pause-menu text in
+`Game_DrawHUD()` that never goes through Clay at all.
 
-- `UiContext` lifecycle and retained tree storage.
-- Layout solving (`row`/`column`, padding, margin, gap, justify, align).
-- Resolution-independent size primitives (`UI_Px`, `UI_Percent`, `UI_Grow`, `UI_Vw`, `UI_Vh`).
-- Draw command recording/flushing (rect/text/image).
-- Text/rect/image drawing and element interaction state (`hovered`, `pressed`, `released`, `held`).
+Two other things matter for a pixel font like the one we ship
+(`unscii-16`):
 
-Public entrypoints:
+- It gets baked at its own native size (16px), not whatever size a given
+  piece of UI wants to display at. Individual draw calls pick their own
+  on-screen `fontSize`, and raylib scales from `baseSize` for free.
+- Coverage gets thresholded to a hard on/off mask (same idea as raylib's
+  `FONT_BITMAP` path) instead of left antialiased, so edges read as sharp
+  pixels instead of a soft blur.
 
-- UI System Lifecycle main Functions: `UI_Init`, `UI_Shutdown`, `UI_BeginFrame`, `UI_EndFrame`.
-- Style/size helpers: `UI_Style`, `UI_TextStyle`, `UI_Size`, `UI_SizeRange`.
-- UI ree APIs: `UI_PushContainer`, `UI_PopContainer`, `UI_Text`, `UI_Rect`, `UI_Image`.
-- UI Elements Query Functions: `UI_GetElementState`, `UI_IsHovered`, `UI_WasPressed`, `UI_WasReleased`, `UI_GetRect`.
-
-## About Game UI
-
-For now Game UI only has two main components, _Info Panel_ and the _Hotbar_:
-
-- `HUD_BuildInfoPanel(...)` for debug text (fps/facing/xyz/biome).
-- `HUD_BuildHotbar(...)` for retained hotbar node composition.
-
+Font texture filtering stays forced to `TEXTURE_FILTER_POINT` so glyphs stay
+pixel-sharp on top of all that.
 
 ## Resolution Independent UI
 
-`UI_BeginFrame()` computes:
+Clay has no built-in "reference resolution" concept; it just takes raw pixel
+values. `hud_scale()` in `hud.c` reproduces the old behavior directly:
 
-- `scale_x = screen_width / reference_width`
-- `scale_y = screen_height / reference_height`
-- `ui->scale = min(scale_x, scale_y)` (clamped to a small positive minimum)
+- `scale = min(screen_width / 1280, screen_height / 720)`, floored to an
+  integer and clamped to `>= 1`.
 
-Reference resolution is configurable through `UI_SetReferenceResolution(...)` (currently `1280 x 720` in game init).
+All HUD sizes (panel padding, slot size, gaps) get computed in real screen
+pixels from this scale and passed straight to `CLAY_SIZING_FIXED(...)`, no
+extra unit conversion needed since Clay doesn't re-scale fixed sizes on its
+own. Snapping the scale to an integer keeps glyphs and slot edges landing on
+whole pixels, which avoids blur from a point-filtered atlas at a
+non-integer scale.
 
-## Pixel-Perfect Text
+## Retained Hotbar Background
 
-To keep pixel fonts sharp and prevent weird blurry pixels when changing window size or UI scale (eventually will be a thing):
+Clay's layout declaration is immediate mode by design (their own docs say as
+much) and they recommend mapping stable per-element ids to persistent
+objects for anything that wants real retained-mode behavior. raylib's 2D
+drawing has no persistent scene graph, though: every draw call has to be
+reissued each frame regardless of whether anything changed, since the
+framebuffer gets fully redrawn. So the only way to actually retain something
+here is a persistent render target.
 
-- Font texture filter is forced to `TEXTURE_FILTER_POINT`.
-- Text scale uses integer snapping: `floor(ui->scale)`, clamped to `>= 1`.
-- Text position is rounded to integer pixels.
-- Font size and spacing are rounded to integer pixels.
+`HUD_BuildHotbar()` only reserves a `CLAY_SIZING_FIXED` box in the Clay tree
+(`hud_hotbar_panel`) for layout purposes. `HUD_DrawHotbar()`, called after
+`ClayRender_Draw()` once `Clay_GetElementData()` can resolve that box's
+final screen position, bakes the panel border, fill, and per-slot
+border/fill rectangles into a `RenderTexture2D`. It only regenerates that
+texture when something affecting its look actually changed: selected hotbar
+slot, UI scale, or panel size. Otherwise it just blits the cached texture
+with a single `DrawTexturePro`. Per-slot block icons are drawn separately on
+top of that blit, since Clay's built-in image element can only do a
+full-texture blit (no atlas sub-rect), and icons change independently of the
+background anyway.
 
-This avoids sub-pixel sampling blur when window size is non-integer relative to reference size.
-
-## Batching Notes
-
-`UI_EndFrame()` records draw commands in strict UI order, then flushes contiguous runs:
-
-- Contiguous rect runs are flushed together (while still using `DrawRectangleRec` per rect).
-- Contiguous image runs are grouped by texture id and flushed via `DrawTexturePro`.
-- Text commands remain explicit boundaries (`DrawTextEx`) in v1.
-
-Given Raylib already has internal batching this here might as well be overengineering but the 
-"batching" we're implementing here serves as a example at least.
+The info panel doesn't get the same treatment: its text (fps, position,
+biome) changes almost every frame, so there'd be nothing worth retaining.
 
 ## Hotbar Rendering Details
 
-`HUD_BuildHotbar(...)` builds a bottom-center retained hotbar with scale-aware sizing.
+Per slot: atlas tile lookup via `Block_Texture(block_id, FACE_UP)` (tile size
+`16x16`), tint via `Block_GetFaceTint(...)`, drawn with `DrawTexturePro`
+straight onto the screen rather than through Clay (see above).
 
-For each slot we lookup the tile, apply the default tint and add it as a image to the UI.
+## Possible Improvements
 
-- Atlas tile lookup: `Block_Texture(block_id, FACE_UP)`
-- Atlas tile size: `16 x 16`
-- Tint application: `Block_GetFaceTint(block_id, FACE_UP, ...)`
-- Image node call: `UI_Image(...)` with atlas source + tint
-
-## Possible improvements
-
-- No clipping/masking yet.
-- No text wrapping
-- Full UI element tree is rebuilt every frame despite the actual "graphical objects" being reused.
-- Text is still being rendered by explicit text calls instead of creating and storing glyphs to be rendered.
-- Add dsl, file defined UI (Maybe?)
+- No clipping/scrolling yet, though Clay supports it (`.clip` on
+  `Clay_ElementDeclaration`) whenever the HUD needs it.
+- No text wrapping.
+- The info panel's background rectangle is cheap enough to draw fresh every
+  frame as-is; if that ever changes it could get the same retained-texture
+  treatment as the hotbar, gated on whatever inputs actually move.

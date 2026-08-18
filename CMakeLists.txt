@@ -42,7 +42,19 @@ FetchContent_Declare(
     GIT_SHALLOW TRUE
 )
 
-FetchContent_MakeAvailable(raylib stb fastnoiselite enet)
+FetchContent_Declare(
+    clay
+    GIT_REPOSITORY https://github.com/nicbarker/clay.git
+    GIT_TAG v0.14
+    GIT_SHALLOW TRUE
+)
+
+# clay.h is used as a single header; disable clays additional build
+# steps.
+set(CLAY_INCLUDE_ALL_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(CLAY_INCLUDE_DEMOS OFF CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(raylib stb fastnoiselite enet clay)
 
 if (TARGET enet)
     set(ENET_TARGET enet)
@@ -53,7 +65,6 @@ else()
 endif()
 
 add_subdirectory(libvoxel)
-add_subdirectory(libui)
 add_subdirectory(libnet)
 add_subdirectory(raylib-cimgui)
 
@@ -62,6 +73,8 @@ set(RUNTIME_SOURCES
     src/gfx/renderer.c
     src/gfx/shader_paths.c
     src/gfx/selection_highlight.c
+    src/ui/font_atlas.c
+    src/ui/clay_render.c
     src/ui/hud.c
     src/game/game.c
     src/game/game_input.c
@@ -89,10 +102,11 @@ target_include_directories(rlvoxel_runtime PUBLIC
     src
     ${stb_SOURCE_DIR}
     ${fastnoiselite_SOURCE_DIR}/C
+    ${clay_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/libvoxel/include
 )
 
-target_link_libraries(rlvoxel_runtime PUBLIC raylib voxel ui net raylib-cimgui
+target_link_libraries(rlvoxel_runtime PUBLIC raylib voxel net raylib-cimgui
                                              Threads::Threads)
 if (NOT WIN32)
     target_link_libraries(rlvoxel_runtime PUBLIC m)

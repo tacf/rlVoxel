@@ -19,8 +19,10 @@
 #include "raylib.h"
 #include "rlcimgui.h"
 #include "server/server_core.h"
+#include "ui/clay_render.h"
+#include "ui/font_atlas.h"
 #include "ui/hud.h"
-#include "ui/ui.h"
+#include <clay.h>
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 #include "world/blocks.h"
@@ -930,51 +932,6 @@ static float game_break_visual_duration_seconds(uint8_t block_id) {
                GAME_BREAK_VISUAL_MIN_SECONDS, 1.20f);
 }
 
-static void game_advance_break_visual(Game *game, const VoxelRaycastHit *hit, float tick_dt) {
-  int durability;
-  float duration_seconds;
-  float progress_step;
-
-  if (game == NULL || hit == NULL || !hit->hit || tick_dt <= 0.0f) {
-    return;
-  }
-
-  if (hit->block_id == BLOCK_BEDROCK) {
-    game_reset_break_visual(game);
-    return;
-  }
-
-  durability = Block_GetDurability(hit->block_id);
-  if (durability <= 0) {
-    game_reset_break_visual(game);
-    return;
-  }
-
-  if (!game->break_visual_active || game->break_visual_x != hit->block_x ||
-      game->break_visual_y != hit->block_y || game->break_visual_z != hit->block_z) {
-    game->break_visual_active = true;
-    game->break_visual_x = hit->block_x;
-    game->break_visual_y = hit->block_y;
-    game->break_visual_z = hit->block_z;
-    game->break_visual_damage = 0.0f;
-    game->break_visual_last_recover_tick = 0u;
-  }
-
-  duration_seconds = game_break_visual_duration_seconds(hit->block_id);
-  if (duration_seconds <= 0.0f) {
-    return;
-  }
-
-  progress_step = tick_dt / duration_seconds;
-  if (!isfinite(progress_step) || progress_step <= 0.0f) {
-    return;
-  }
-
-  game->break_visual_damage =
-      Clamp(game->break_visual_damage + progress_step, 0.0f, GAME_BREAK_VISUAL_HOLD_PROGRESS);
-  game->break_visual_last_tick = game->network_tick_counter;
-}
-
 static void game_decay_break_visual(Game *game) {
   uint32_t recovery_start_tick;
   uint32_t elapsed_recovery_ticks;
@@ -1247,26 +1204,34 @@ bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connec
   Renderer_SetPixelateEnabled(&game->renderer, game->pixel_look_enabled);
   Mesher_SetGeometryPixelSnapEnabled(game->pixel_look_enabled);
 
-  if (!UI_Init(&game->ui, UI_DEFAULT_MAX_NODES, UI_DEFAULT_TEXT_CAPACITY, UI_DEFAULT_MAX_STATES)) {
-    Game_Shutdown(game);
-    return false;
-  }
-  UI_SetReferenceResolution(&game->ui, 1280.0f, 720.0f);
-  game->ui_initialized = true;
-
   game->terrain_texture = LoadTexture("assets/atlas.png");
   if (game->terrain_texture.id == 0) {
     Game_Shutdown(game);
     return false;
   }
 
-  game->font = LoadFontEx("assets/fonts/default.ttf", 20, NULL, 0);
+  /* 16 is unscii-16's native pixel grid; UI code picks its own on-screen
+   * fontSize per draw call, and raylib scales from this base size. */
+  game->font = FontAtlas_Load("assets/fonts/default.ttf", 16);
   if (game->font.texture.id == 0) {
     Game_Shutdown(game);
     return false;
   }
   SetTextureFilter(game->font.texture, TEXTURE_FILTER_POINT);
   SetTextureFilter(game->terrain_texture, TEXTURE_FILTER_POINT);
+
+  uint32_t clay_memory_size = Clay_MinMemorySize();
+  game->clay_memory = malloc(clay_memory_size);
+  if (game->clay_memory == NULL) {
+    Game_Shutdown(game);
+    return false;
+  }
+  Clay_Arena clay_arena =
+      Clay_CreateArenaWithCapacityAndMemory(clay_memory_size, game->clay_memory);
+  Clay_Initialize(clay_arena, (Clay_Dimensions){(float)GetScreenWidth(), (float)GetScreenHeight()},
+                  (Clay_ErrorHandler){0});
+  Clay_SetMeasureTextFunction(ClayRender_MeasureText, &game->font);
+  game->clay_initialized = true;
 
   if (game->remote_mode) {
     uint16_t port = (connect_port == 0) ? 25565u : connect_port;
@@ -1380,9 +1345,10 @@ void Game_Shutdown(Game *game) {
     game->font = (Font){0};
   }
 
-  if (game->ui_initialized) {
-    UI_Shutdown(&game->ui);
-    game->ui_initialized = false;
+  if (game->clay_initialized) {
+    free(game->clay_memory);
+    game->clay_memory = NULL;
+    game->clay_initialized = false;
   }
 
   if (game->renderer_initialized) {
@@ -1649,10 +1615,28 @@ void Game_Draw(Game *game, float alpha) {
 }
 
 void Game_DrawHUD(Game *game) {
-  UI_BeginFrame(&game->ui, game->font, 20.0f);
-  HUD_BuildInfoPanel(&game->ui, &game->player, &game->world);
-  HUD_BuildHotbar(&game->ui, game->terrain_texture, &game->player);
-  UI_EndFrame(&game->ui);
+  float screen_w = (float)GetScreenWidth();
+  float screen_h = (float)GetScreenHeight();
+
+  Clay_SetLayoutDimensions((Clay_Dimensions){screen_w, screen_h});
+  Clay_SetPointerState((Clay_Vector2){(float)GetMouseX(), (float)GetMouseY()},
+                       IsMouseButtonDown(MOUSE_BUTTON_LEFT));
+  Clay_BeginLayout();
+  CLAY({
+      .id = CLAY_ID("hud_root"),
+      .layout =
+          {
+              .sizing = {.width = CLAY_SIZING_FIXED(screen_w),
+                         .height = CLAY_SIZING_FIXED(screen_h)},
+              .layoutDirection = CLAY_TOP_TO_BOTTOM,
+          },
+  }) {
+    HUD_BuildInfoPanel(&game->player, &game->world);
+    HUD_BuildHotbar(&game->player);
+  }
+  Clay_RenderCommandArray hud_commands = Clay_EndLayout();
+  ClayRender_Draw(hud_commands, &game->font);
+  HUD_DrawHotbar(game->terrain_texture, &game->player);
 
   if (game_is_paused(game)) {
     int sw = GetScreenWidth();

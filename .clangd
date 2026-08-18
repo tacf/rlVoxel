@@ -5,6 +5,7 @@ CompileFlags:
     - -I.
     - -I./build/_deps/stb-src
     - -I./build/_deps/fastnoiselite-src/C
+    - -I./build/_deps/clay-src/
     - -I./libvoxel/include
 
     # Standard flags

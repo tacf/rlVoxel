@@ -169,6 +169,10 @@ That said here's a very very short list of missing features
   work through this project by giving it it's own visual identity we'll definitly highlight that and give proper
   credit.
 
+Code aspect:
+- There's too many Magic numbers and scattered config values/constants
+- Pretty sure there are a lot o memory issues (add memory runtime asserts and CI validations).
+
 ## Known Issues
 
 - Leaves don't render when viewed below water
@@ -180,7 +184,7 @@ That said here's a very very short list of missing features
 - **Textures**: BetaPixel by [DragonDePlatino](https://www.planetminecraft.com/texture-pack/betapixel/) (with custom changes)
 - **Font**: [Unscii-16](http://viznut.fi/unscii/) and Font Awesome assets used by ImGui (see [license file](raylib-cimgui/extras/FontAwsome_LICENSE.txt))
 - **BetaSharp Project**: For the ideias for the profiler strategy and display
-- **Clay.h**: UI library/framework design is greatly based/inspired by [Clay.h](https://github.com/nicbarker/clay)
+- **Clay.h**: Used as library for handling UI layout and setup [Clay.h](https://github.com/nicbarker/clay)
 
 If there is something that you feel is misrepresented please reach out.
 

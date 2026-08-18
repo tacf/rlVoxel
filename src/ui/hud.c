@@ -1,47 +1,43 @@
 #include "ui/hud.h"
 
 #include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 #include <raymath.h>
-#include <stdint.h>
+
+#include <clay.h>
 
 #include "game/player.h"
+#include "net/protocol.h"
 #include "raylib.h"
-#include "ui/ui.h"
 #include "world/blocks.h"
 #include "world/world.h"
 #include "world/worldgen.h"
 
-static float hud_scale(const UiContext *ui) {
-  if (ui == NULL || ui->scale <= 0.0f) {
-    return 1.0f;
+/* Helper function to keep the code cleaner. Clay uses pointers to the actual
+ * strings so that's what we just set here. */
+static Clay_String hud_clay_string(const char *text) {
+  return (Clay_String){
+      .isStaticallyAllocated = false, .length = (int32_t)strlen(text), .chars = text};
+}
+
+/* Reference-resolution scale, snapped to an integer >= 1 so pixel-font glyphs
+ * (drawn through a point-filtered atlas) always land on whole screen pixels. */
+static float hud_scale(void) {
+  float sw = (float)GetScreenWidth();
+  float sh = (float)GetScreenHeight();
+  float scale = fminf(sw / 1280.0f, sh / 720.0f);
+  if (scale < 0.01f) {
+    scale = 0.01f;
   }
-
-  float snapped = floorf(ui->scale);
-  if (snapped < 1.0f) {
-    snapped = 1.0f;
+  scale = floorf(scale);
+  if (scale < 1.0f) {
+    scale = 1.0f;
   }
-  return snapped;
-}
-
-static float hud_ui_scale(const UiContext *ui) {
-  if (ui == NULL || ui->scale <= 0.0f) {
-    return 1.0f;
-  }
-  return ui->scale;
-}
-
-static float hud_to_ui_px(const UiContext *ui, float screen_px) {
-  return screen_px / hud_ui_scale(ui);
-}
-
-static UiLength hud_px(const UiContext *ui, float screen_px) {
-  return UI_Px(hud_to_ui_px(ui, screen_px));
-}
-
-static UiEdges hud_edges(const UiContext *ui, float left, float top, float right, float bottom) {
-  return UI_Edges(hud_to_ui_px(ui, left), hud_to_ui_px(ui, top), hud_to_ui_px(ui, right),
-                  hud_to_ui_px(ui, bottom));
+  return scale;
 }
 
 static Rectangle hud_block_source_rect(uint8_t block_id) {
@@ -69,35 +65,31 @@ static Color hud_block_face_tint(uint8_t block_id, int face) {
   return (Color){r, g, b, 255};
 }
 
-/* Ids for hotbar hudelements, predefined to avoid building them every frame */
-static const char *HUD_HOTBAR_SLOT_BORDER_IDS[PLAYER_HOTBAR_SLOTS] = {
-    "hotbar_slot_border_0", "hotbar_slot_border_1", "hotbar_slot_border_2",
-    "hotbar_slot_border_3", "hotbar_slot_border_4", "hotbar_slot_border_5",
-    "hotbar_slot_border_6", "hotbar_slot_border_7", "hotbar_slot_border_8",
-};
-
-static const char *HUD_HOTBAR_SLOT_FILL_IDS[PLAYER_HOTBAR_SLOTS] = {
-    "hotbar_slot_fill_0", "hotbar_slot_fill_1", "hotbar_slot_fill_2",
-    "hotbar_slot_fill_3", "hotbar_slot_fill_4", "hotbar_slot_fill_5",
-    "hotbar_slot_fill_6", "hotbar_slot_fill_7", "hotbar_slot_fill_8",
-};
-
-static const char *HUD_HOTBAR_SLOT_ICON_IDS[PLAYER_HOTBAR_SLOTS] = {
-    "hotbar_slot_icon_0", "hotbar_slot_icon_1", "hotbar_slot_icon_2",
-    "hotbar_slot_icon_3", "hotbar_slot_icon_4", "hotbar_slot_icon_5",
-    "hotbar_slot_icon_6", "hotbar_slot_icon_7", "hotbar_slot_icon_8",
-};
-
-void HUD_BuildInfoPanel(UiContext *ui, const Player *player, const World *world) {
-  if (ui == NULL || player == NULL || world == NULL) {
+void HUD_BuildInfoPanel(const Player *player, const World *world) {
+  if (player == NULL || world == NULL) {
     return;
   }
+
+  // static: so that pointers outlive this function, since Clay needs them later.
+  static char fps_text[24];
+  static char facing_text[24];
+  static char xyz_text[64];
+  static char mode_text[32];
+  static char biome_text[48];
 
   float fps = GetFPS();
   float yaw_deg = player->yaw * (180.0f / PI);
 
-  int dir_idx = (int)floorf((yaw_deg + 202.5f) / 45.0f);
-  dir_idx = ((dir_idx % 8) + 8) % 8;
+  /* Wrap yaw into [0, 360) first so the bucket math below never has to deal
+   * with negative angles. Yaw 0 faces world +Z, which this game treats as
+   * "south", hence the extra +180. */
+  float compass_deg = fmodf(yaw_deg + 180.0f, 360.0f);
+  if (compass_deg < 0.0f) {
+    compass_deg += 360.0f;
+  }
+  /* 8 compass directions spaced 45 degrees apart; +22.5 (half a slice)
+   * centers each direction on its bucket instead of starting at its edge. */
+  int dir_idx = (int)((compass_deg + 22.5f) / 45.0f) % 8;
 
   const char *dirs[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
   const char *biome =
@@ -105,123 +97,226 @@ void HUD_BuildInfoPanel(UiContext *ui, const Player *player, const World *world)
   const char *mode_name =
       (player->gameplay_mode == GAMEPLAY_MODE_SURVIVAL) ? "Survival" : "Creative";
 
-  UiStyle info_panel = UI_Style();
-  info_panel.direction = UI_DIRECTION_COLUMN;
-  info_panel.padding = UI_EdgesAll(8.0f);
-  info_panel.margin = UI_Edges(10.0f, 20.0f, 0.0f, 0.0f);
-  info_panel.gap = 3.0f;
-  info_panel.draw_background = true;
-  info_panel.background_color = (Color){0, 0, 0, 105};
+  snprintf(fps_text, sizeof(fps_text), "FPS: %.0f", fps);
+  snprintf(facing_text, sizeof(facing_text), "Facing: %s", dirs[dir_idx]);
+  snprintf(xyz_text, sizeof(xyz_text), "XYZ: %.2f, %.2f, %.2f", player->position.x,
+           player->position.y, player->position.z);
+  snprintf(mode_text, sizeof(mode_text), "Mode: %s%s", mode_name,
+           player->fly_enabled ? " (Fly)" : "");
+  snprintf(biome_text, sizeof(biome_text), "Biome: %s", biome);
 
-  UI_PushContainer(ui, "hud_info", &info_panel);
+  Clay_TextElementConfig *text_config = CLAY_TEXT_CONFIG({
+      .textColor = {255, 255, 255, 255},
+      .fontSize = 20,
+  });
 
-  UiTextStyle text = UI_TextStyle();
-  text.font_size = 20.0f;
-  text.color = WHITE;
-
-  UI_Text(ui, "fps", TextFormat("FPS: %.0f", fps), NULL, &text);
-  UI_Text(ui, "facing", TextFormat("Facing: %s", dirs[dir_idx]), NULL, &text);
-  UI_Text(ui, "xyz",
-          TextFormat("XYZ: %.2f, %.2f, %.2f", player->position.x, player->position.y,
-                     player->position.z),
-          NULL, &text);
-  UI_Text(ui, "mode", TextFormat("Mode: %s%s", mode_name, player->fly_enabled ? " (Fly)" : ""),
-          NULL, &text);
-  UI_Text(ui, "biome", TextFormat("Biome: %s", biome), NULL, &text);
-
-  UI_PopContainer(ui);
+  /* Clay has no per-element margin; offset the panel from the screen edge via
+   * padding on a FIT-sized passthrough wrapper instead. */
+  CLAY({
+      .id = CLAY_ID("hud_info_offset"),
+      .layout =
+          {
+              .sizing = {.width = CLAY_SIZING_FIT(0), .height = CLAY_SIZING_FIT(0)},
+              .padding = {.left = 10, .top = 20},
+          },
+  }) {
+    CLAY({
+        .id = CLAY_ID("hud_info"),
+        .layout =
+            {
+                .sizing = {.width = CLAY_SIZING_FIT(0), .height = CLAY_SIZING_FIT(0)},
+                .padding = CLAY_PADDING_ALL(8),
+                .childGap = 3,
+                .layoutDirection = CLAY_TOP_TO_BOTTOM,
+            },
+        .backgroundColor = {0, 0, 0, 105},
+    }) {
+      CLAY_TEXT(hud_clay_string(fps_text), text_config);
+      CLAY_TEXT(hud_clay_string(facing_text), text_config);
+      CLAY_TEXT(hud_clay_string(xyz_text), text_config);
+      CLAY_TEXT(hud_clay_string(mode_text), text_config);
+      CLAY_TEXT(hud_clay_string(biome_text), text_config);
+    }
+  }
 }
 
-void HUD_BuildHotbar(UiContext *ui, Texture2D terrain_texture, const Player *player) {
-  if (ui == NULL || player == NULL) {
+typedef struct HudHotbarMetrics {
+  float scale;
+  float panel_padding;
+  float slot_size;
+  float slot_gap;
+  float panel_width;
+  float panel_height;
+} HudHotbarMetrics;
+
+static HudHotbarMetrics hud_hotbar_metrics(void) {
+  HudHotbarMetrics m;
+  m.scale = hud_scale();
+  m.panel_padding = 6.0f * m.scale;
+  m.slot_size = 36.0f * m.scale;
+  m.slot_gap = 5.0f * m.scale;
+
+  float total_slots_width =
+      (m.slot_size * (float)PLAYER_HOTBAR_SLOTS) + (m.slot_gap * (float)(PLAYER_HOTBAR_SLOTS - 1));
+  m.panel_width = total_slots_width + m.panel_padding * 2.0f;
+  m.panel_height = m.slot_size + m.panel_padding * 2.0f;
+  return m;
+}
+
+void HUD_BuildHotbar(const Player *player) {
+  if (player == NULL) {
     return;
   }
 
-  float scale = hud_scale(ui);
-  float panel_padding = 6.0f * scale;
-  float slot_size = 36.0f * scale;
-  float slot_gap = 5.0f * scale;
+  HudHotbarMetrics m = hud_hotbar_metrics();
 
-  float total_slots_width =
-      (slot_size * (float)PLAYER_HOTBAR_SLOTS) + (slot_gap * (float)(PLAYER_HOTBAR_SLOTS - 1));
-  float panel_width = total_slots_width + panel_padding * 2.0f;
-  float panel_height = slot_size + panel_padding * 2.0f;
-  float icon_size = slot_size - (8.0f * scale);
-  if (icon_size < 4.0f) {
-    icon_size = 4.0f;
+  CLAY({
+      .id = CLAY_ID("hud_hotbar_overlay"),
+      .layout =
+          {
+              .sizing = {.width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0)},
+              .padding = {.bottom = (uint16_t)(20.0f * m.scale)},
+              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_BOTTOM},
+          },
+  }) {
+    /* Background (border/fill/slots) is baked into a retained RenderTexture2D by
+     * HUD_DrawHotbar(); Clay only reserves the screen position/size here. */
+    CLAY({
+        .id = CLAY_ID("hud_hotbar_panel"),
+        .layout =
+            {
+                .sizing = {.width = CLAY_SIZING_FIXED(m.panel_width),
+                          .height = CLAY_SIZING_FIXED(m.panel_height)},
+            },
+    }) {}
   }
+}
 
-  UiStyle overlay = UI_Style();
-  overlay.width = UI_Size(UI_Percent(100.0f));
-  /* Root UI is column-flow; grow keeps this overlay in the remaining viewport area. */
-  overlay.height = UI_Size(UI_Grow(1.0f));
-  overlay.direction = UI_DIRECTION_COLUMN;
-  overlay.align_items = UI_ALIGN_CENTER;
-  overlay.justify_content = UI_JUSTIFY_END;
-  UI_PushContainer(ui, "hud_hotbar_overlay", &overlay);
+/* Retained hotbar background -- Mostly as an example for now on how to do it.
+ * The border/fill/slot backgrounds only change when the selected slot or the
+ * UI scale changes. We build a RenderTexture2D. Clay just has the meta info
+ * about the location of the hotbar mainly for handling the other elements */
+typedef struct HudHotbarCache {
+  RenderTexture2D texture;
+  bool valid;
+  int hotbar_index;
+  float scale;
+  int width;
+  int height;
+} HudHotbarCache;
 
-  UiStyle panel_border = UI_Style();
-  panel_border.width = UI_Size(hud_px(ui, panel_width));
-  panel_border.height = UI_Size(hud_px(ui, panel_height));
-  panel_border.margin = hud_edges(ui, 0.0f, 0.0f, 0.0f, 20.0f * scale);
-  panel_border.padding = UI_EdgesAll(hud_to_ui_px(ui, 1.0f));
-  panel_border.draw_background = true;
-  panel_border.background_color = (Color){210, 210, 210, 110};
-  UI_PushContainer(ui, "hud_hotbar_panel_border", &panel_border);
+static HudHotbarCache s_hotbar_cache = {0};
 
-  UiStyle panel_fill = UI_Style();
-  panel_fill.width = UI_Size(UI_Percent(100.0f));
-  panel_fill.height = UI_Size(UI_Percent(100.0f));
-  panel_fill.direction = UI_DIRECTION_ROW;
-  panel_fill.align_items = UI_ALIGN_CENTER;
-  panel_fill.padding = UI_EdgesAll(hud_to_ui_px(ui, panel_padding - 1.0f));
-  panel_fill.gap = hud_to_ui_px(ui, slot_gap);
-  panel_fill.draw_background = true;
-  panel_fill.background_color = (Color){0, 0, 0, 140};
-  UI_PushContainer(ui, "hud_hotbar_panel_fill", &panel_fill);
+static void hud_draw_hotbar_background(const HudHotbarMetrics *m, const Player *player) {
+  DrawRectangle(0, 0, (int)m->panel_width, (int)m->panel_height, (Color){210, 210, 210, 110});
 
+  const float inset = 1.0f;
+  DrawRectangle((int)inset, (int)inset, (int)(m->panel_width - inset * 2.0f),
+                (int)(m->panel_height - inset * 2.0f), (Color){0, 0, 0, 140});
+
+  float cursor_x = m->panel_padding;
   for (int i = 0; i < PLAYER_HOTBAR_SLOTS; i++) {
     bool selected = (i == player->hotbar_index);
     Color slot_fill = selected ? (Color){248, 238, 190, 220} : (Color){45, 45, 45, 210};
     Color slot_border = selected ? (Color){255, 220, 100, 255} : (Color){190, 190, 190, 180};
-    float slot_border_size = selected ? 2.0f : 1.0f;
+    float border_size = selected ? 2.0f : 1.0f;
 
-    UiStyle slot_border_style = UI_Style();
-    slot_border_style.width = UI_Size(hud_px(ui, slot_size));
-    slot_border_style.height = UI_Size(hud_px(ui, slot_size));
-    slot_border_style.padding = UI_EdgesAll(hud_to_ui_px(ui, slot_border_size));
-    slot_border_style.draw_background = true;
-    slot_border_style.background_color = slot_border;
-    UI_PushContainer(ui, HUD_HOTBAR_SLOT_BORDER_IDS[i], &slot_border_style);
+    Rectangle border_rect = {cursor_x, m->panel_padding, m->slot_size, m->slot_size};
+    DrawRectangleRec(border_rect, slot_border);
 
-    UiStyle slot_fill_style = UI_Style();
-    slot_fill_style.width = UI_Size(UI_Percent(100.0f));
-    slot_fill_style.height = UI_Size(UI_Percent(100.0f));
-    slot_fill_style.direction = UI_DIRECTION_COLUMN;
-    slot_fill_style.align_items = UI_ALIGN_CENTER;
-    slot_fill_style.justify_content = UI_JUSTIFY_CENTER;
-    slot_fill_style.draw_background = true;
-    slot_fill_style.background_color = slot_fill;
-    UI_PushContainer(ui, HUD_HOTBAR_SLOT_FILL_IDS[i], &slot_fill_style);
+    Rectangle fill_rect = {
+        border_rect.x + border_size,
+        border_rect.y + border_size,
+        border_rect.width - border_size * 2.0f,
+        border_rect.height - border_size * 2.0f,
+    };
+    DrawRectangleRec(fill_rect, slot_fill);
 
-    if (terrain_texture.id != 0) {
-      uint8_t block_id = player->hotbar_blocks[i];
-      Rectangle source = hud_block_source_rect(block_id);
-      Color tint = hud_block_face_tint(block_id, FACE_UP);
+    cursor_x += m->slot_size + m->slot_gap;
+  }
+}
 
-      UiStyle icon_style = UI_Style();
-      icon_style.width = UI_Size(hud_px(ui, icon_size));
-      icon_style.height = UI_Size(hud_px(ui, icon_size));
-      icon_style.align_self = UI_ALIGN_CENTER;
-
-      UI_Image(ui, HUD_HOTBAR_SLOT_ICON_IDS[i], terrain_texture, source, tint, &icon_style);
-    }
-
-    UI_PopContainer(ui);
-    UI_PopContainer(ui);
+void HUD_DrawHotbar(Texture2D terrain_texture, const Player *player) {
+  if (player == NULL) {
+    return;
   }
 
-  UI_PopContainer(ui);
-  UI_PopContainer(ui);
-  UI_PopContainer(ui);
+  HudHotbarMetrics m = hud_hotbar_metrics();
+  int width = (int)ceilf(m.panel_width);
+  int height = (int)ceilf(m.panel_height);
+  if (width < 1) {
+    width = 1;
+  }
+  if (height < 1) {
+    height = 1;
+  }
+
+  bool dirty = !s_hotbar_cache.valid || s_hotbar_cache.width != width ||
+               s_hotbar_cache.height != height || s_hotbar_cache.scale != m.scale ||
+               s_hotbar_cache.hotbar_index != player->hotbar_index;
+
+  if (dirty) {
+    if (s_hotbar_cache.valid &&
+        (s_hotbar_cache.width != width || s_hotbar_cache.height != height)) {
+      UnloadRenderTexture(s_hotbar_cache.texture);
+      s_hotbar_cache.valid = false;
+    }
+    if (!s_hotbar_cache.valid) {
+      s_hotbar_cache.texture = LoadRenderTexture(width, height);
+      s_hotbar_cache.valid = (s_hotbar_cache.texture.id != 0);
+    }
+
+    if (s_hotbar_cache.valid) {
+      BeginTextureMode(s_hotbar_cache.texture);
+      ClearBackground(BLANK);
+      hud_draw_hotbar_background(&m, player);
+      EndTextureMode();
+
+      s_hotbar_cache.width = width;
+      s_hotbar_cache.height = height;
+      s_hotbar_cache.scale = m.scale;
+      s_hotbar_cache.hotbar_index = player->hotbar_index;
+    }
+  }
+
+  Clay_ElementData panel = Clay_GetElementData(CLAY_ID("hud_hotbar_panel"));
+  if (!panel.found) {
+    return;
+  }
+  Clay_BoundingBox box = panel.boundingBox;
+
+  if (s_hotbar_cache.valid) {
+    /* A RenderTexture2D's pixels are stored bottom-up in GPU memory (OpenGL
+     * convention), so drawing it with a plain top-down source rect would
+     * come out upside down. A negative source height tells DrawTexturePro
+     * to sample the rows in reverse, which flips it back right-side up. */
+    Rectangle src = {0, 0, (float)s_hotbar_cache.texture.texture.width,
+                     -(float)s_hotbar_cache.texture.texture.height};
+    Rectangle dst = {box.x, box.y, box.width, box.height};
+    DrawTexturePro(s_hotbar_cache.texture.texture, src, dst, (Vector2){0}, 0.0f, WHITE);
+  }
+
+  if (terrain_texture.id == 0) {
+    return;
+  }
+
+  float icon_size = m.slot_size - (8.0f * m.scale);
+  if (icon_size < 4.0f) {
+    icon_size = 4.0f;
+  }
+  float icon_offset = (m.slot_size - icon_size) * 0.5f;
+
+  float cursor_x = box.x + m.panel_padding;
+  float icon_y = box.y + m.panel_padding + icon_offset;
+
+  for (int i = 0; i < PLAYER_HOTBAR_SLOTS; i++) {
+    uint8_t block_id = player->hotbar_blocks[i];
+    Rectangle source = hud_block_source_rect(block_id);
+    Color tint = hud_block_face_tint(block_id, FACE_UP);
+
+    Rectangle dest = {cursor_x + icon_offset, icon_y, icon_size, icon_size};
+    DrawTexturePro(terrain_texture, source, dest, (Vector2){0}, 0.0f, tint);
+
+    cursor_x += m.slot_size + m.slot_gap;
+  }
 }

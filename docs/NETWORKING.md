@@ -4,44 +4,40 @@
 
 `libnet` gives the game one networking system that works in both runtime modes:
 
-- **Internal singleplayer**: the client and the server both run inside the same process and talk through a local in-memory connection.
-- **Dedicated multiplayer**: the client and server talk over the network using ENet and UDP.
+- **Internal singleplayer**: client and server run inside the same process and talk through a local in-memory connection.
+- **Dedicated multiplayer**: client and server talk over the network using ENet and UDP.
 
-The main goal is to keep the game **server-authoritative** in both cases. That means the server is always the final source of truth, even in singleplayer.
+The goal is to keep the game **server-authoritative** in both cases: the server is always the final source of truth, even in singleplayer.
 
 ---
 
 ## Big picture
 
-The networking code is split into three layers:
+The networking code splits into three layers:
 
 ### 1. `transport` (`libnet/include/net/transport.h`)
-This is the lowest layer.
 
-It only handles moving packets from one place to another.
+Lowest layer. Only job is moving packets from one place to another.
 
 Backends:
+
 - ENet
 - local in-memory transport pair
 
 ### 2. `protocol` (`libnet/include/net/protocol.h`)
-This layer defines the wire format.
 
-It handles:
-- message types
-- versioning
-- packet encoding and decoding
-- shared packet metadata helpers
+Defines the wire format: message types, versioning, packet encoding/decoding, and shared packet metadata helpers.
 
 Useful helpers:
+
 - `Protocol_MessageTypeName(type)`
-- `Protocol_FixedPayloadSize(type)` — returns `0` for variable-size payloads
-- `Protocol_FixedPacketSize(type)` — returns `0` for variable-size packets
+- `Protocol_FixedPayloadSize(type)`: returns `0` for variable-size payloads
+- `Protocol_FixedPacketSize(type)`: returns `0` for variable-size packets
 
 ### 3. `net` facade (`libnet/include/net/net.h`)
-This is the gameplay-facing API.
 
-Game and server code use this layer directly through functions like:
+The gameplay-facing API. Game and server code use this layer directly through functions like:
+
 - `Net_Update`
 - `Net_PollEvent`
 - `Net_Send*`
@@ -52,7 +48,7 @@ It also decides which channel and reliability mode each message type uses.
 
 ## Build target
 
-`libnet` builds as the static target `net` and is linked into `rlvoxel_runtime`.
+`libnet` builds as the static target `net` and links into `rlvoxel_runtime`.
 
 ---
 
@@ -60,8 +56,7 @@ It also decides which channel and reliability mode each message type uses.
 
 ## Internal singleplayer
 
-In singleplayer, the game still uses the same client/server flow.
-The only difference is that both sides are running in the same process.
+Singleplayer still runs the full client/server flow; the only difference is both sides live in the same process.
 
 How it works:
 
@@ -70,8 +65,7 @@ How it works:
 3. Keep the client endpoint in `Game`.
 4. Run the same protocol and events used by dedicated multiplayer.
 
-So even offline singleplayer still goes through the network layer.
-That keeps behavior consistent.
+So even offline singleplayer goes through the network layer, keeping behavior consistent between modes.
 
 ## Dedicated server
 
@@ -85,9 +79,8 @@ In multiplayer:
 
 ## Protocol v2
 
-Every packet starts with a `NetMessageHeader`.
+Every packet starts with a `NetMessageHeader` containing:
 
-It contains:
 - `magic` (`RVNET_MAGIC`)
 - `version` (`RVNET_VERSION`)
 - `type`
@@ -96,7 +89,7 @@ It contains:
 
 ### Message types
 
-The current message set is:
+The current message set:
 
 - `C2S_Hello`
 - `S2C_Welcome`
@@ -111,18 +104,19 @@ The current message set is:
 ### Packet size notes
 
 Most v2 messages are fixed size, so you can use:
+
 - `Protocol_FixedPayloadSize(...)`
 - `Protocol_FixedPacketSize(...)`
 
-The main exception is `S2C_Disconnect`, because it includes a text reason and can vary in size.
-For that message, the fixed-size helpers return `0`.
+The exception is `S2C_Disconnect`: it carries a text reason, so its size varies and the fixed-size helpers return `0` for it.
 
 ---
 
 ## ENet channel rules
 
-### Channel 0 — reliable and ordered
-Used for important messages that must arrive and stay in order:
+### Channel 0: reliable and ordered
+
+For important messages that must arrive and stay in order:
 
 - hello / welcome
 - chunk data
@@ -130,32 +124,31 @@ Used for important messages that must arrive and stay in order:
 - chunk unload
 - disconnect
 
-### Channel 1 — gameplay updates
-Used for movement and player state.
+### Channel 1: gameplay updates
 
-- `C2S_PlayerMove`: **unreliable sequenced**  
-  For high-rate movement updates. Newer data replaces older data.
+For movement and player state.
 
-- `C2S_InputCmd`: **reliable ordered**  
-  For action presses/releases, selected block, and authority-related gameplay input.
+- `C2S_PlayerMove`: **unreliable sequenced**.
+  High-rate movement updates where newer data replaces older data.
 
-  This message also carries:
+- `C2S_InputCmd`: **reliable ordered**.
+  Action presses/releases, selected block, and authority-related gameplay input.
+
+  Also carries:
   - gameplay mode (`creative` or `survival`)
   - fly toggle state
 
-- `S2C_PlayerState`: **reliable ordered**  
-  Used for corrections and periodic synchronization from the server.
+- `S2C_PlayerState`: **reliable ordered**.
+  Corrections and periodic synchronization from the server.
 
 ---
 
 ## `S2C_PlayerState` timeline fields
 
-`S2C_PlayerState` includes two important timeline anchors:
+`S2C_PlayerState` includes two timeline anchors that matter for client prediction and reconciliation:
 
 - `tick_id`: the current server simulation tick
-- `input_tick_id`: the latest `C2S_PlayerMove.tick_id` that the server accepted
-
-These values are important for client prediction and reconciliation.
+- `input_tick_id`: the latest `C2S_PlayerMove.tick_id` the server accepted
 
 ---
 
@@ -165,14 +158,15 @@ These values are important for client prediction and reconciliation.
 
 Movement runs on a fixed **20 ticks per second** simulation (`GAME_TICK_RATE`).
 
-The client predicts its own movement locally so controls feel responsive.
-At the same time, the server stays authoritative and decides what is actually valid.
+The client predicts its own movement locally so controls feel responsive. The server stays authoritative and decides what's actually valid.
 
 ### The client sends
+
 - `C2S_PlayerMove`: player position, velocity, look direction, and related movement state
 - `C2S_InputCmd`: input actions, selected block, gameplay mode, and fly state
 
 ### The server sends
+
 - `S2C_PlayerState`: corrections and regular sync updates
 
 ---
@@ -181,30 +175,36 @@ At the same time, the server stays authoritative and decides what is actually va
 
 Source: `src/game/game.c`
 
-### During each frame
+### Every frame
+
 The client:
+
 - reads player input
 - applies look changes immediately
 - merges input into the pending tick state
 
-There is **no camera-look smoothing** here.
+There's **no camera-look smoothing** here.
 
-### During each tick
+### Every tick
+
 The client:
+
 1. processes incoming network events first
 2. predicts local player movement
 3. sends `C2S_PlayerMove`
 4. sends `C2S_InputCmd` when something meaningful changes, plus occasional keepalive updates
-5. stores a prediction sample using the current tick id
+5. stores a prediction sample keyed by the current tick id
 
 ### When `S2C_PlayerState` arrives
+
 The client:
+
 1. uses `input_tick_id` to find the matching point in its prediction history
 2. checks whether the difference is tiny or meaningful
-3. if the difference is tiny, it just treats the state as acknowledged
-4. if the difference is bigger, it resets to the authoritative server state and replays any unacknowledged predicted inputs
+3. if tiny, treats the state as acknowledged and moves on
+4. if meaningful, resets to the authoritative server state and replays any unacknowledged predicted inputs
 
-In simple terms: the client predicts first, then fixes itself when the server disagrees.
+Short version: predict first, correct when the server disagrees.
 
 ---
 
@@ -212,8 +212,10 @@ In simple terms: the client predicts first, then fixes itself when the server di
 
 Source: `src/server/server_core.c`
 
-### During each tick
+### Every tick
+
 The server:
+
 1. uses the latest movement snapshot
 2. validates movement changes and collision feasibility
 3. accepts or rejects the movement
@@ -221,19 +223,19 @@ The server:
 5. sends `S2C_PlayerState` back to the client for correction or sync
 
 ### On reset or disconnect
+
 The server clears:
+
 - pending input state
 - the last applied input tick anchor
 
 ---
 
-## Why `input_tick_id` is important
+## Why `input_tick_id` matters
 
-This field helps the client compare its prediction against the **same input timeline** the server actually processed.
+It lets the client compare its prediction against the **same input timeline** the server actually processed. Reconciliation only works correctly when both sides agree on the same moment in the input history.
 
-That matters because reconciliation only works properly when both sides are talking about the same moment in the input history.
-
-Without `input_tick_id`, the client can compare against the wrong prediction sample, which often causes repeated rubberbanding or bad corrections.
+Without `input_tick_id`, the client can compare against the wrong prediction sample, which shows up as repeated rubberbanding or bad corrections.
 
 ---
 
@@ -241,11 +243,11 @@ Without `input_tick_id`, the client can compare against the wrong prediction sam
 
 If movement sync feels wrong, check these first:
 
-- The client and server are built with the same protocol version.
+- Client and server are built with the same protocol version.
 - `S2C_PlayerState.input_tick_id` is increasing as expected.
 - The client still has matching prediction history for the acknowledged ticks.
 - After a correction, the client replays unacknowledged inputs.
-- Big corrections are rare and only happen when there is real divergence.
+- Big corrections are rare and only happen when there's real divergence.
 
 ---
 
@@ -289,10 +291,7 @@ while (Net_PollEvent(endpoint, &evt)) {
 }
 ```
 
-This is the normal loop:
-- service the network
-- poll events
-- react based on event type
+Normal loop: service the network, poll events, react based on event type.
 
 ---
 
@@ -306,8 +305,7 @@ Net_SendPlayerMove(endpoint, sequence++, tick, &move);
 Net_SendInputCmd(endpoint, sequence++, tick, &actions);
 ```
 
-Use `Net_SendPacket` only when you intentionally need to send raw pre-encoded data.
-Most game code should stick to the typed send helpers.
+Use `Net_SendPacket` only when you intentionally need to send raw pre-encoded data. Most game code should stick to the typed send helpers.
 
 ---
 

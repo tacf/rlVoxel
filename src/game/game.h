@@ -13,7 +13,6 @@
 #include "game/player.h"
 #include "net/protocol.h"
 #include "server/server_core.h"
-#include "ui/ui.h"
 #include "world/world.h"
 
 #define GAME_PREDICTION_HISTORY_SIZE 256u
@@ -53,7 +52,7 @@ typedef struct Game {
 
   Texture2D terrain_texture;
   Font font;
-  UiContext ui;
+  void *clay_memory;
 
   int64_t seed;
   int network_tick_rate;
@@ -121,7 +120,7 @@ typedef struct Game {
   bool profiler_renderer_initialized;
   bool telemetry_initialized;
   bool imgui_initialized;
-  bool ui_initialized;
+  bool clay_initialized;
   bool world_initialized;
   bool renderer_initialized;
 } Game;
