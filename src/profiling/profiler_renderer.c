@@ -219,8 +219,8 @@ static void RenderFrameGraph(int section_index, const Profiler *profiler) {
   igSpacing();
 
   ImVec2 canvas_pos, canvas_size;
-  igGetCursorScreenPos(&canvas_pos);
-  igGetContentRegionAvail(&canvas_size);
+  canvas_pos = igGetCursorScreenPos();
+  canvas_size = igGetContentRegionAvail();
 
   if (canvas_size.y < 120.0f) {
     canvas_size.y = 120.0f;

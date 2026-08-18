@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://json.schemastore.org/clangd.json
 CompileFlags:
   CompilationDatabase: ./build
   Add:
@@ -22,6 +23,3 @@ Diagnostics:
 
 Index:
   Background: Build
-
-Format:
-  Style: file

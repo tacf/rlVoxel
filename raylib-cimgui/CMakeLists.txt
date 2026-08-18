@@ -6,7 +6,7 @@ include(FetchContent)
 FetchContent_Declare(
     cimgui
     GIT_REPOSITORY https://github.com/cimgui/cimgui.git
-    GIT_TAG 1.90.4dock
+    GIT_TAG 1.92.9dock
     GIT_SHALLOW TRUE
 )
 

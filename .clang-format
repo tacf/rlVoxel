@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://schemastore.org/clang-format-21.x.json
 BasedOnStyle: LLVM
 
 # Practical defaults for this C codebase.

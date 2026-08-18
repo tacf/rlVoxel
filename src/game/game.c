@@ -1236,7 +1236,7 @@ bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connec
   rligSetup(true);
   game->imgui_initialized = true;
 
-  ImGuiIO *io = igGetIO();
+  ImGuiIO *io = igGetIO_Nil();
   io->ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 
   if (!Renderer_Init(&game->renderer)) {

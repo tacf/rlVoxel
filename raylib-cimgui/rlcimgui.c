@@ -3,6 +3,7 @@
 #include "rlgl.h"
 #include <string.h>
 #include <math.h>
+#include <stdint.h>
 
 #define FLT_MAX 3.402823466e+38F
 
@@ -11,6 +12,18 @@
         ImGuiIO_AddMouseButtonEvent(io, imGuiMouse, true); \
     else if (IsMouseButtonReleased(rayMouse)) \
         ImGuiIO_AddMouseButtonEvent(io, imGuiMouse, false)
+
+// Explicit SizePixels so the base font isn't flagged ImFontFlags_ImplicitRefSize,
+// which newer cimgui/imgui refuses to MergeMode an explicitly-sized icon font into.
+static const ImFontConfig DefaultFontConfig = {
+    .FontDataOwnedByAtlas = true,
+    .PixelSnapH = true,
+    .SizePixels = 13.0f,
+    .GlyphMaxAdvanceX = FLT_MAX,
+    .RasterizerMultiply = 1.0f,
+    .RasterizerDensity = 1.0f,
+    .ExtraSizeScale = 1.0f,
+};
 
 static ImGuiMouseCursor CurrentMouseCursor = ImGuiMouseCursor_COUNT;
 ImGuiContext* GlobalContext = NULL;
@@ -36,29 +49,77 @@ bool rligIsSuperDown() {
     return IsKeyDown(KEY_RIGHT_SUPER) || IsKeyDown(KEY_LEFT_SUPER);
 }
 
+static void ImGui_ProcessTextures(ImDrawData* draw_data)
+{
+    if (draw_data == NULL || draw_data->Textures == NULL)
+        return;
+
+    for (int i = 0; i < draw_data->Textures->Size; ++i)
+    {
+        ImTextureData* tex = draw_data->Textures->Data[i];
+        if (tex == NULL)
+            continue;
+
+        if (tex->Status == ImTextureStatus_WantCreate)
+        {
+            unsigned char* pixels = (unsigned char*)ImTextureData_GetPixels(tex);
+            if (pixels == NULL)
+                continue;
+
+            int width = tex->Width;
+            int height = tex->Height;
+
+            if (tex->Format == ImTextureFormat_Alpha8)
+            {
+                Image image = GenImageColor(width, height, BLANK);
+                unsigned char* dst = (unsigned char*)image.data;
+                for (int p = 0; p < width * height; ++p)
+                {
+                    dst[p * 4 + 0] = 255;
+                    dst[p * 4 + 1] = 255;
+                    dst[p * 4 + 2] = 255;
+                    dst[p * 4 + 3] = pixels[p];
+                }
+                Texture2D* rt = (Texture2D*)MemAlloc(sizeof(Texture2D));
+                *rt = LoadTextureFromImage(image);
+                UnloadImage(image);
+                tex->TexID = (ImTextureID)(uintptr_t)rt;
+            }
+            else
+            {
+                Image image = GenImageColor(width, height, BLANK);
+                memcpy(image.data, pixels, width * height * 4);
+                Texture2D* rt = (Texture2D*)MemAlloc(sizeof(Texture2D));
+                *rt = LoadTextureFromImage(image);
+                UnloadImage(image);
+                tex->TexID = (ImTextureID)(uintptr_t)rt;
+            }
+            tex->Status = ImTextureStatus_OK;
+        }
+        else if (tex->Status == ImTextureStatus_WantDestroy)
+        {
+            if (tex->TexID != 0)
+            {
+                Texture2D* rt = (Texture2D*)(uintptr_t)tex->TexID;
+                UnloadTexture(*rt);
+                MemFree(rt);
+                tex->TexID = 0;
+            }
+            tex->Status = ImTextureStatus_Destroyed;
+        }
+    }
+}
+
 void ReloadFonts(void)
 {
-	ImGuiIO* io = igGetIO();
-	unsigned char* pixels = NULL;
+    ImGuiIO* io = igGetIO_Nil();
+    ImFontAtlas* atlas = io->Fonts;
 
-	int width;
-	int height;
-    ImFontAtlas_GetTexDataAsRGBA32(io->Fonts, &pixels, &width, &height, NULL);
+    ImFontAtlas_ClearTexData(atlas);
+    ImFontAtlas_ClearFonts(atlas);
+    ImFontAtlas_AddFontDefault(atlas, &DefaultFontConfig);
 
-	Image image = GenImageColor(width, height, BLANK);
-	memcpy(image.data, pixels, width * height * 4);
-
-	Texture2D* fontTexture = (Texture2D*)io->Fonts->TexID;
-	if (fontTexture && fontTexture->id != 0)
-	{
-		UnloadTexture(*fontTexture);
-		MemFree(fontTexture);
-	}
-
-	fontTexture = (Texture2D*)MemAlloc(sizeof(Texture2D));
-	*fontTexture = LoadTextureFromImage(image);
-	UnloadImage(image);
-	io->Fonts->TexID = fontTexture;
+    ImGui_ProcessTextures(igGetDrawData());
 }
 
 static const KeyboardKey RaylibKeys[] = {
@@ -298,15 +359,15 @@ static MouseCursor ImGuiCursorToRaylib(ImGuiMouseCursor cursor)
     };
 }
 
-static const char* GetClipTextCallback(void* user_data) 
+static const char* GetClipTextCallback(ImGuiContext* ctx)
 {
-    (void)user_data;
+    (void)ctx;
     return GetClipboardText();
 }
 
-static void SetClipTextCallback(void* user_data, const char* text)
+static void SetClipTextCallback(ImGuiContext* ctx, const char* text)
 {
-    (void)user_data;
+    (void)ctx;
     SetClipboardText(text);
 }
 
@@ -330,7 +391,7 @@ void HandleGamepadStickEvent(ImGuiIO* io, GamepadAxis axis, ImGuiKey negKey, ImG
 
 static void ImGuiNewFrame(float deltaTime)
 {
-    ImGuiIO* io = igGetIO();
+    ImGuiIO* io = igGetIO_Nil();
 
     if (IsWindowFullscreen())
     {
@@ -439,7 +500,7 @@ static void ImGuiRenderTriangles(unsigned int count, int indexStart, const ImVec
 static void EnableScissor(float x, float y, float width, float height)
 {
     rlEnableScissorTest();
-    ImGuiIO* io = igGetIO();
+    ImGuiIO* io = igGetIO_Nil();
 
     ImVec2 scale = io->DisplayFramebufferScale;
 #if !defined(__APPLE__)
@@ -467,16 +528,17 @@ static void SetupGlobals(void)
 
 void SetupBackend(void)
 {
-    ImGuiIO* io = igGetIO();
+    ImGuiIO* io = igGetIO_Nil();
 	io->BackendPlatformName = "imgui_impl_raylib";
 
 	io->BackendFlags |= ImGuiBackendFlags_HasMouseCursors | ImGuiBackendFlags_HasGamepad | ImGuiBackendFlags_HasSetMousePos;
 
 	io->MousePos = (ImVec2){0, 0};
 
-	io->SetClipboardTextFn = SetClipTextCallback;
-	io->GetClipboardTextFn = GetClipTextCallback;
-	io->ClipboardUserData = NULL;
+    ImGuiPlatformIO* pio = igGetPlatformIO_Nil();
+	pio->Platform_SetClipboardTextFn = SetClipTextCallback;
+	pio->Platform_GetClipboardTextFn = GetClipTextCallback;
+	pio->Platform_ClipboardUserData = NULL;
 }
 
 void rligSetupFontAwesome(void)
@@ -485,7 +547,7 @@ void rligSetupFontAwesome(void)
     static const ImWchar icons_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
 	ImFontConfig icons_config = {
         .FontDataOwnedByAtlas = true,
-        .SizePixels = FONT_AWESOME_ICON_SIZE,
+        .SizePixels = 13.0f,
         .OversampleH = 1,
         .OversampleV = 1,
         .PixelSnapH = true,
@@ -496,8 +558,8 @@ void rligSetupFontAwesome(void)
         .RasterizerDensity = 1.0f
     };
 
-    ImGuiIO* io = igGetIO();
-    ImFontAtlas_AddFontFromMemoryCompressedTTF(io->Fonts, (void*)fa_solid_900_compressed_data, fa_solid_900_compressed_size, FONT_AWESOME_ICON_SIZE, &icons_config, icons_ranges); // FA 6
+    ImGuiIO* io = igGetIO_Nil();
+    ImFontAtlas_AddFontFromMemoryCompressedTTF(io->Fonts, (void*)fa_solid_900_compressed_data, fa_solid_900_compressed_size, 0, &icons_config, icons_ranges); // FA 6
 #endif
 }
 
@@ -519,8 +581,8 @@ void rligBeginInitImGui(void)
         GlobalContext = igCreateContext(NULL);
     }
 
-	ImGuiIO* io = igGetIO();
-    ImFontAtlas_AddFontDefault(io->Fonts, NULL);
+	ImGuiIO* io = igGetIO_Nil();
+    ImFontAtlas_AddFontDefault(io->Fonts, &DefaultFontConfig);
 }
 
 void rligSetup(bool dark)
@@ -593,16 +655,20 @@ void ImGui_ImplRaylib_BuildFontAtlas(void)
 
 void ImGui_ImplRaylib_Shutdown()
 {
-    ImGuiIO* io = igGetIO();
-    Texture2D* fontTexture = (Texture2D*)io->Fonts->TexID;
+    ImGuiIO* io = igGetIO_Nil();
+    ImFontAtlas* atlas = io->Fonts;
 
-    if (fontTexture)
+    for (int i = 0; i < atlas->TexList.Size; ++i)
     {
-        UnloadTexture(*fontTexture);
-        MemFree(fontTexture);
+        ImTextureData* tex = atlas->TexList.Data[i];
+        if (tex && tex->TexID != 0)
+        {
+            Texture2D* rt = (Texture2D*)(uintptr_t)tex->TexID;
+            UnloadTexture(*rt);
+            MemFree(rt);
+            tex->TexID = 0;
+        }
     }
-
-    io->Fonts->TexID = 0;
 }
 
 void ImGui_ImplRaylib_NewFrame(void)
@@ -615,7 +681,9 @@ void ImGui_ImplRaylib_RenderDrawData(ImDrawData* draw_data)
 	rlDrawRenderBatchActive();
 	rlDisableBackfaceCulling();
 
-	for (int l = 0; l < draw_data->CmdListsCount; ++l)
+    ImGui_ProcessTextures(draw_data);
+
+	for (int l = 0; l < draw_data->CmdLists.Size; ++l)
 	{
 		const ImDrawList* commandList = draw_data->CmdLists.Data[l];
 
@@ -630,7 +698,7 @@ void ImGui_ImplRaylib_RenderDrawData(ImDrawData* draw_data)
 				continue;
 			}
 
-			ImGuiRenderTriangles(cmd.ElemCount, cmd.IdxOffset, &commandList->IdxBuffer, &commandList->VtxBuffer, cmd.TextureId);
+			ImGuiRenderTriangles(cmd.ElemCount, cmd.IdxOffset, &commandList->IdxBuffer, &commandList->VtxBuffer, (void*)(uintptr_t)cmd.TexRef._TexID);
 			rlDrawRenderBatchActive();
 		}
 	}
@@ -642,7 +710,7 @@ void ImGui_ImplRaylib_RenderDrawData(ImDrawData* draw_data)
 
 bool ImGui_ImplRaylib_ProcessEvents(void)
 {
-	ImGuiIO* io = igGetIO();
+	ImGuiIO* io = igGetIO_Nil();
 
 	bool focused = IsWindowFocused();
 	if (focused != LastFrameFocused)
@@ -764,7 +832,8 @@ void rligImageRect(const Texture* image, int destWidth, int destHeight, Rectangl
     }
 
     ImVec4 color = {1.0f, 1.0f, 1.0f, 1.0f};
-    igImage((ImTextureID)image, (ImVec2){(float)destWidth, (float)destHeight}, uv0, uv1, color, color);
+    ImTextureRef_c tex_ref = {._TexData = NULL, ._TexID = (ImTextureID)image};
+    igImage(tex_ref, (ImVec2){(float)destWidth, (float)destHeight}, uv0, uv1);
 }
 
 void rligImageRenderTexture(const RenderTexture* image)
@@ -787,7 +856,7 @@ void rligImageRenderTextureFit(const RenderTexture* image, bool center)
 		igSetCurrentContext(GlobalContext);
 
     ImVec2 area;
-    igGetContentRegionAvail(&area);
+    area = igGetContentRegionAvail();
 
     float scale =  area.x / image->texture.width;
 
@@ -821,5 +890,6 @@ bool rligImageButton(const char* name, const Texture* image)
     ImVec2 uv = {1.0f, 1.0f};
     ImVec4 color = {1.0f, 1.0f, 1.0f, 1.0f};
 
-    return igImageButton(name, (ImTextureID)image, (ImVec2){(float)(image->width), (float)(image->height)}, uv, uv, color, color);
+    ImTextureRef_c tex_ref = {._TexData = NULL, ._TexID = (ImTextureID)image};
+    return igImageButton(name, tex_ref, (ImVec2){(float)(image->width), (float)(image->height)}, uv, uv, color, color);
 }
