@@ -39,11 +39,8 @@ The packet log table listing all packet exchanges as well as sizes and ack refer
 
 ## Reset and Lifecycle
 
-- `NetProfiler_Init()`: initialize and start uptime baseline.
-- `NetProfiler_Reset()`: clear counters/history while preserving initialized state.
+- `NetProfiler_Init()`: initialize, or reset counters/history, and start uptime baseline.
 - `NetProfiler_Shutdown()`: clear all state.
-
-Lazy init is supported; calling record/draw before explicit init is safe.
 
 ## Notes
 

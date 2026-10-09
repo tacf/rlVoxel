@@ -117,3 +117,11 @@ target_link_libraries(rlVoxel PRIVATE rlvoxel_runtime)
 
 add_executable(rlVoxelServer src/server/server_main.c)
 target_link_libraries(rlVoxelServer PRIVATE rlvoxel_runtime)
+
+option(RLVOXEL_BUILD_TESTS "Build rlVoxel regression tests" OFF)
+if(RLVOXEL_BUILD_TESTS)
+    enable_testing()
+    add_executable(world_tests tests/world_tests.c)
+    target_link_libraries(world_tests PRIVATE rlvoxel_runtime)
+    add_test(NAME world_tests COMMAND world_tests)
+endif()

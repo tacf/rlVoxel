@@ -9,24 +9,10 @@
 #include <string.h>
 #include <math.h>
 
-void VoxelMeshData_Init(VoxelMeshData *mesh) {
-  mesh->vertices = NULL;
-  mesh->texcoords = NULL;
-  mesh->colors = NULL;
-  mesh->vertex_count = 0;
-  mesh->capacity = 0;
-}
-
 void VoxelMeshData_Free(VoxelMeshData *mesh) {
-  if (mesh->vertices)
-    arrfree(mesh->vertices);
-  if (mesh->texcoords)
-    arrfree(mesh->texcoords);
-  if (mesh->colors)
-    arrfree(mesh->colors);
-  mesh->vertices = NULL;
-  mesh->texcoords = NULL;
-  mesh->colors = NULL;
+  arrfree(mesh->vertices);
+  arrfree(mesh->texcoords);
+  arrfree(mesh->colors);
   mesh->vertex_count = 0;
   mesh->capacity = 0;
 }
@@ -244,35 +230,28 @@ static float compute_face_luminance(const VoxelMesherCallbacks *cb, int wx, int 
   return clamp_luminance(luminance);
 }
 
-static void face_color(const VoxelBlockRegistry *registry, const VoxelMesherCallbacks *cb,
-                       const VoxelMesherConfig *config, uint8_t block_id, int wx, int y, int wz,
-                       int face, uint8_t *r_out, uint8_t *g_out, uint8_t *b_out) {
-  /* Compute lighting for this face */
-  float luminance = compute_face_luminance(cb, wx, y, wz, face, config);
-
-  /* Get block tint color */
+static void tinted_color(const VoxelBlockRegistry *registry, uint8_t block_id, int face,
+                         float luminance, uint8_t *r_out, uint8_t *g_out, uint8_t *b_out) {
   uint8_t tr = 255, tg = 255, tb = 255;
   VoxelBlock_GetTint(registry, block_id, face, &tr, &tg, &tb);
 
-  /* Multiply tint by luminance */
-
-  /* Multiply tint by luminance */
   *r_out = (uint8_t)fminf(255.0f, luminance * (float)tr);
   *g_out = (uint8_t)fminf(255.0f, luminance * (float)tg);
   *b_out = (uint8_t)fminf(255.0f, luminance * (float)tb);
+}
+
+static void face_color(const VoxelBlockRegistry *registry, const VoxelMesherCallbacks *cb,
+                       const VoxelMesherConfig *config, uint8_t block_id, int wx, int y, int wz,
+                       int face, uint8_t *r_out, uint8_t *g_out, uint8_t *b_out) {
+  float luminance = compute_face_luminance(cb, wx, y, wz, face, config);
+  tinted_color(registry, block_id, face, luminance, r_out, g_out, b_out);
 }
 
 static void cutout_color(const VoxelBlockRegistry *registry, const VoxelMesherCallbacks *cb,
                          const VoxelMesherConfig *config, uint8_t block_id, int wx, int y, int wz,
                          uint8_t *r_out, uint8_t *g_out, uint8_t *b_out) {
   float luminance = compute_cutout_luminance(cb, wx, y, wz, config);
-
-  uint8_t tr = 255, tg = 255, tb = 255;
-  VoxelBlock_GetTint(registry, block_id, VOXEL_FACE_UP, &tr, &tg, &tb);
-
-  *r_out = (uint8_t)fminf(255.0f, luminance * (float)tr);
-  *g_out = (uint8_t)fminf(255.0f, luminance * (float)tg);
-  *b_out = (uint8_t)fminf(255.0f, luminance * (float)tb);
+  tinted_color(registry, block_id, VOXEL_FACE_UP, luminance, r_out, g_out, b_out);
 }
 
 /* ============================================================================
@@ -381,16 +360,22 @@ static void face_corner_ao(const VoxelBlockRegistry *registry, const VoxelMesher
   }
 }
 
-static void append_cross_plant(VoxelMeshData *mesh, const VoxelMesherConfig *config, int tile,
-                               float x, float y, float z, uint8_t r, uint8_t g, uint8_t b,
-                               uint8_t a) {
+static void tile_uv_bounds(const VoxelMesherConfig *config, int tile, float inset, float *u0,
+                           float *v0, float *u1, float *v1) {
   float tu = (float)(tile % 16) * config->tile_size;
   float tv = (float)(tile / 16) * config->tile_size;
   float texel = config->texel_padding / 256.0f;
-  float u0 = tu + texel * 0.1f;
-  float v0 = tv + texel * 0.1f;
-  float u1 = tu + config->tile_size - texel * 0.1f;
-  float v1 = tv + config->tile_size - texel * 0.1f;
+  *u0 = tu + texel * inset;
+  *v0 = tv + texel * inset;
+  *u1 = tu + config->tile_size - texel * inset;
+  *v1 = tv + config->tile_size - texel * inset;
+}
+
+static void append_cross_plant(VoxelMeshData *mesh, const VoxelMesherConfig *config, int tile,
+                               float x, float y, float z, uint8_t r, uint8_t g, uint8_t b,
+                               uint8_t a) {
+  float u0, v0, u1, v1;
+  tile_uv_bounds(config, tile, 0.1f, &u0, &v0, &u1, &v1);
 
   float uv[4][2] = {{u1, v1}, {u0, v1}, {u0, v0}, {u1, v0}};
 
@@ -481,13 +466,8 @@ void VoxelMesher_BuildChunk(const VoxelChunk *chunk, const VoxelBlockRegistry *r
             }
 
             int tile = VoxelBlock_Texture(registry, block_id, face);
-            float tu = (float)(tile % 16) * config->tile_size;
-            float tv = (float)(tile / 16) * config->tile_size;
-            float texel = config->texel_padding / 256.0f;
-            float u0 = tu + texel * 0.5f;
-            float v0 = tv + texel * 0.5f;
-            float u1 = tu + config->tile_size - texel * 0.5f;
-            float v1 = tv + config->tile_size - texel * 0.5f;
+            float u0, v0, u1, v1;
+            tile_uv_bounds(config, tile, 0.5f, &u0, &v0, &u1, &v1);
 
             float face_pos[4][3];
             face_vertices((float)lx, (float)y, (float)lz, face, face_pos, 1.0f);
@@ -541,13 +521,8 @@ void VoxelMesher_BuildChunk(const VoxelChunk *chunk, const VoxelBlockRegistry *r
           }
 
           int tile = VoxelBlock_Texture(registry, block_id, face);
-          float tu = (float)(tile % 16) * config->tile_size;
-          float tv = (float)(tile / 16) * config->tile_size;
-          float texel = config->texel_padding / 256.0f;
-          float u0 = tu + texel * 0.5f;
-          float v0 = tv + texel * 0.5f;
-          float u1 = tu + config->tile_size - texel * 0.5f;
-          float v1 = tv + config->tile_size - texel * 0.5f;
+          float u0, v0, u1, v1;
+          tile_uv_bounds(config, tile, 0.5f, &u0, &v0, &u1, &v1);
 
           float face_pos[4][3];
           face_vertices((float)lx, (float)y, (float)lz, face, face_pos, block_height);

@@ -133,7 +133,7 @@ static void draw_selection_face_brackets(Vector3 mins, Vector3 maxs, SelectionFa
 }
 
 void SelectionHighlight_Draw(const VoxelRaycastHit *hit) {
-  if (hit == NULL || !hit->hit) {
+  if (!hit->hit) {
     return;
   }
 

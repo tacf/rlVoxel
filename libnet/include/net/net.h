@@ -121,25 +121,12 @@ bool Net_SendPacket(NetEndpoint *endpoint, const uint8_t *data, size_t size, uin
  * Movement model:
  * - Net_SendPlayerMove: high-rate movement snapshots.
  * - Net_SendInputCmd: action/selection command stream.
- * - Net_SendPlayerState: server correction/periodic sync snapshots.
  */
 bool Net_SendHello(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick, const NetHello *hello);
-bool Net_SendWelcome(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
-                     const NetWelcome *welcome);
 bool Net_SendInputCmd(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
                       const GameplayInputCmd *input_cmd);
 bool Net_SendPlayerMove(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
                         const NetPlayerMove *player_move);
-bool Net_SendPlayerState(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
-                         const AuthoritativePlayerState *player_state);
-bool Net_SendChunkData(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
-                       const NetChunkData *chunk_data);
-bool Net_SendBlockDelta(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
-                        const NetBlockDelta *block_delta);
-bool Net_SendChunkUnload(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
-                         const NetChunkUnload *chunk_unload);
-bool Net_SendDisconnect(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
-                        const NetDisconnect *disconnect_msg);
 
 /**
  * Initiates endpoint close/disconnect.

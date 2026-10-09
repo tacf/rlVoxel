@@ -13,6 +13,10 @@ typedef struct LightNode {
 } LightNode;
 
 typedef struct LightUpdateQueue {
+  /* Fixed ring buffer. At capacity, new work replaces the oldest pending node. 
+   * It's better than before but we still might lose work so we need to circle back
+   * to this.. get it? ring.. circle back?
+   */
   LightNode *items;
   ptrdiff_t read_index;
   int count;
@@ -23,8 +27,7 @@ struct World;
 
 void LightQueue_Init(LightUpdateQueue *queue, int capacity);
 void LightQueue_Shutdown(LightUpdateQueue *queue);
-void LightQueue_Clear(LightUpdateQueue *queue);
-bool LightQueue_Push(LightUpdateQueue *queue, LightNode node);
+void LightQueue_Push(LightUpdateQueue *queue, LightNode node);
 bool LightQueue_Pop(LightUpdateQueue *queue, LightNode *out_node);
 
 void Lighting_InitializeChunkSkylight(struct World *world, Chunk *chunk);

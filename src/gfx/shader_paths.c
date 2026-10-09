@@ -20,7 +20,7 @@ static const char *shader_primary_folder(void) {
 
 void ShaderPaths_Resolve(char *dst, size_t dst_size, const char *relative_path) {
   // TODO: This probably needs some memory safety checks/asserts
-  if (dst == NULL || dst_size == 0 || relative_path == NULL) {
+  if (dst_size == 0) {
     return;
   }
 

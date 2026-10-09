@@ -44,9 +44,6 @@ typedef struct VoxelMesherConfig {
   float *light_lut;    /* Light level lookup table (16 entries, 0-15) */
 } VoxelMesherConfig;
 
-/* Initialize mesh data */
-void VoxelMeshData_Init(VoxelMeshData *mesh);
-
 /* Free mesh data */
 void VoxelMeshData_Free(VoxelMeshData *mesh);
 

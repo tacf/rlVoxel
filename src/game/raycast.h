@@ -25,23 +25,12 @@ typedef struct VoxelRaycastHit {
 } VoxelRaycastHit;
 
 /**
- * Performs a voxel raycast using the Amanatides & Woo algorithm.
- * Casts a ray through the voxel grid and returns the first solid block hit.
- *
- * @param world         The world to cast the ray in
- * @param origin        Starting position of the ray
- * @param direction     Direction to cast the ray (will be normalized)
- * @param max_distance  Maximum distance to cast
- * @param out_hit       Output parameter for hit information
- * @return              True if a block was hit, false otherwise
- */
-bool Raycast_Voxel(const World *world, Vector3 origin, Vector3 direction, float max_distance,
-                   VoxelRaycastHit *out_hit);
-
-/**
- * Placement-focused raycast.
+ * Voxel raycast using the Amanatides & Woo algorithm.
  * Returns the first solid or replaceable non-liquid block hit (for example
  * tall grass).
+ *
+ * @param direction     Direction to cast the ray (will be normalized)
+ * @param max_distance  Maximum distance to cast
  */
 bool Raycast_VoxelForPlacement(const World *world, Vector3 origin, Vector3 direction,
                                float max_distance, VoxelRaycastHit *out_hit);

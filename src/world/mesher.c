@@ -13,14 +13,17 @@
 
 #include "constants.h"
 
-static Shader cutout_shader = {0};
-static bool cutout_shader_loaded = false;
+typedef struct MesherShader {
+  const char *vs_name;
+  const char *fs_name;
+  Shader shader;
+  bool loaded;
+} MesherShader;
 
-static Shader opaque_ao_shader = {0};
-static bool opaque_ao_shader_loaded = false;
+static MesherShader cutout_shader = {.vs_name = "cutout.vs", .fs_name = "cutout.fs"};
+static MesherShader opaque_ao_shader = {.vs_name = "opaque_ao.vs", .fs_name = "opaque_ao.fs"};
+static MesherShader translucent_shader = {.vs_name = "translucent.vs", .fs_name = "translucent.fs"};
 
-static Shader translucent_shader = {0};
-static bool translucent_shader_loaded = false;
 static bool geometry_pixel_snap_enabled = false;
 static Vector2 geometry_pixel_snap_resolution = {480.0f, 270.0f};
 
@@ -41,76 +44,57 @@ static void mesher_apply_geometry_snap_uniforms(Shader shader) {
   }
 }
 
-static int floor_div16(int x) {
-  if (x >= 0) {
-    return x >> 4;
-  }
-  return -(((-x) + 15) >> 4);
+static MesherShader *const all_shaders[] = {&cutout_shader, &opaque_ao_shader, &translucent_shader};
+
+static void load_shader(MesherShader *entry) {
+  char vs_path[256];
+  char fs_path[256];
+  ShaderPaths_Resolve(vs_path, sizeof(vs_path), entry->vs_name);
+  ShaderPaths_Resolve(fs_path, sizeof(fs_path), entry->fs_name);
+  entry->shader = LoadShader(vs_path, fs_path);
+  entry->loaded = true;
 }
 
-static Shader get_cutout_shader(void) {
-  if (!cutout_shader_loaded) {
-    char vs_path[256];
-    char fs_path[256];
-    ShaderPaths_Resolve(vs_path, sizeof(vs_path), "cutout.vs");
-    ShaderPaths_Resolve(fs_path, sizeof(fs_path), "cutout.fs");
-    cutout_shader = LoadShader(vs_path, fs_path);
-    mesher_apply_geometry_snap_uniforms(cutout_shader);
-    cutout_shader_loaded = true;
+static Shader get_shader(MesherShader *entry) {
+  if (!entry->loaded) {
+    load_shader(entry);
+    mesher_apply_geometry_snap_uniforms(entry->shader);
   }
-  return cutout_shader;
+  return entry->shader;
 }
 
 static Shader get_opaque_ao_shader(void) {
-  if (!opaque_ao_shader_loaded) {
-    char vs_path[256];
-    char fs_path[256];
-    ShaderPaths_Resolve(vs_path, sizeof(vs_path), "opaque_ao.vs");
-    ShaderPaths_Resolve(fs_path, sizeof(fs_path), "opaque_ao.fs");
-    opaque_ao_shader = LoadShader(vs_path, fs_path);
+  if (!opaque_ao_shader.loaded) {
+    load_shader(&opaque_ao_shader);
 
     float aoMin = 0.60f;
     float aoCurve = 1.15f;
 
-    int locMin = GetShaderLocation(opaque_ao_shader, "uAoMin");
-    int locCurve = GetShaderLocation(opaque_ao_shader, "uAoCurve");
+    int locMin = GetShaderLocation(opaque_ao_shader.shader, "uAoMin");
+    int locCurve = GetShaderLocation(opaque_ao_shader.shader, "uAoCurve");
 
     if (locMin >= 0)
-      SetShaderValue(opaque_ao_shader, locMin, &aoMin, SHADER_UNIFORM_FLOAT);
+      SetShaderValue(opaque_ao_shader.shader, locMin, &aoMin, SHADER_UNIFORM_FLOAT);
     if (locCurve >= 0)
-      SetShaderValue(opaque_ao_shader, locCurve, &aoCurve, SHADER_UNIFORM_FLOAT);
+      SetShaderValue(opaque_ao_shader.shader, locCurve, &aoCurve, SHADER_UNIFORM_FLOAT);
 
-    mesher_apply_geometry_snap_uniforms(opaque_ao_shader);
-    opaque_ao_shader_loaded = true;
+    mesher_apply_geometry_snap_uniforms(opaque_ao_shader.shader);
   }
 
-  return opaque_ao_shader;
+  return opaque_ao_shader.shader;
 }
 
-static Shader get_translucent_shader(void) {
-  if (!translucent_shader_loaded) {
-    char vs_path[256];
-    char fs_path[256];
-    ShaderPaths_Resolve(vs_path, sizeof(vs_path), "translucent.vs");
-    ShaderPaths_Resolve(fs_path, sizeof(fs_path), "translucent.fs");
-    translucent_shader = LoadShader(vs_path, fs_path);
-    mesher_apply_geometry_snap_uniforms(translucent_shader);
-    translucent_shader_loaded = true;
+static void refresh_loaded_shaders(void) {
+  for (size_t i = 0; i < sizeof(all_shaders) / sizeof(all_shaders[0]); i++) {
+    if (all_shaders[i]->loaded) {
+      mesher_apply_geometry_snap_uniforms(all_shaders[i]->shader);
+    }
   }
-  return translucent_shader;
 }
 
 void Mesher_SetGeometryPixelSnapEnabled(bool enabled) {
   geometry_pixel_snap_enabled = enabled;
-  if (cutout_shader_loaded) {
-    mesher_apply_geometry_snap_uniforms(cutout_shader);
-  }
-  if (opaque_ao_shader_loaded) {
-    mesher_apply_geometry_snap_uniforms(opaque_ao_shader);
-  }
-  if (translucent_shader_loaded) {
-    mesher_apply_geometry_snap_uniforms(translucent_shader);
-  }
+  refresh_loaded_shaders();
 }
 
 void Mesher_SetGeometryPixelSnapResolution(float width, float height) {
@@ -118,15 +102,7 @@ void Mesher_SetGeometryPixelSnapResolution(float width, float height) {
     return;
   }
   geometry_pixel_snap_resolution = (Vector2){width, height};
-  if (cutout_shader_loaded) {
-    mesher_apply_geometry_snap_uniforms(cutout_shader);
-  }
-  if (opaque_ao_shader_loaded) {
-    mesher_apply_geometry_snap_uniforms(opaque_ao_shader);
-  }
-  if (translucent_shader_loaded) {
-    mesher_apply_geometry_snap_uniforms(translucent_shader);
-  }
+  refresh_loaded_shaders();
 }
 
 /* Callback implementations for libvoxel mesher */
@@ -137,48 +113,24 @@ static uint8_t cb_get_world_block(void *world_data, int wx, int y, int wz) {
 static int cb_get_world_skylight(void *world_data, int wx, int y, int wz) {
   World *world = (World *)world_data;
 
-  int cx = floor_div16(wx);
-  int cz = floor_div16(wz);
-  if (World_GetChunkConst(world, cx, cz) == NULL) {
-    if (y < 0) {
-      return 0;
-    }
-    if (y >= WORLD_MAX_HEIGHT) {
-      return 15;
-    }
+  if (World_GetChunkConst(world, floor_div16(wx), floor_div16(wz)) == NULL) {
     /* Avoid black boundary faces while neighbor chunks are not loaded yet. */
-    return 15;
+    return (y < 0) ? 0 : 15;
   }
 
   return World_GetSkyLight(world, wx, y, wz);
 }
 
-static void assign_model_to_chunk(World *world, VoxelMeshData *mesh_data, Chunk *chunk, bool cutout,
-                                  bool translucent_solid, bool water) {
-  /* Free existing model */
-  void **model_ptr;
-  bool has_model;
+static void assign_model_to_chunk(World *world, VoxelMeshData *mesh_data, Chunk *chunk,
+                                  uint8_t pass, Shader shader) {
+  void **model_slot = Chunk_ModelSlot(chunk, pass);
 
-  if (cutout) {
-    model_ptr = &chunk->cutout_model;
-    has_model = VoxelChunk_HasRenderPass(chunk, CUTOUT);
-  } else if (translucent_solid) {
-    model_ptr = &chunk->translucent_solid_model;
-    has_model = VoxelChunk_HasRenderPass(chunk, TRANSLUCENT_SOLID);
-  } else if (water) {
-    model_ptr = &chunk->translucent_model;
-    has_model = VoxelChunk_HasRenderPass(chunk, TRANSLUCENT);
-  } else {
-    model_ptr = &chunk->solid_model;
-    has_model = VoxelChunk_HasRenderPass(chunk, SOLID);
+  if (VoxelChunk_HasRenderPass(chunk, pass) && *model_slot) {
+    UnloadModel(*(Model *)*model_slot);
+    free(*model_slot);
+    *model_slot = NULL;
   }
-
-  if (has_model && *model_ptr) {
-    UnloadModel(*(Model *)*model_ptr);
-    free(*model_ptr);
-    *model_ptr = NULL;
-    has_model = false;
-  }
+  VoxelChunk_DisableRenderPass(chunk, pass);
 
   if (mesh_data->vertex_count == 0) {
     return;
@@ -203,7 +155,6 @@ static void assign_model_to_chunk(World *world, VoxelMeshData *mesh_data, Chunk 
   memcpy(texcoords, mesh_data->texcoords, tex_size);
   memcpy(colors, mesh_data->colors, color_size);
 
-  /* Create raylib mesh */
   Mesh mesh = {0};
   mesh.vertexCount = mesh_data->vertex_count;
   mesh.triangleCount = mesh_data->vertex_count / 3;
@@ -215,14 +166,7 @@ static void assign_model_to_chunk(World *world, VoxelMeshData *mesh_data, Chunk 
 
   Model model = LoadModelFromMesh(mesh);
   SetMaterialTexture(&model.materials[0], MATERIAL_MAP_DIFFUSE, world->terrain_texture);
-
-  if (cutout) {
-    model.materials[0].shader = get_cutout_shader();
-  } else if (translucent_solid || water) {
-    model.materials[0].shader = get_translucent_shader();
-  } else {
-    model.materials[0].shader = get_opaque_ao_shader();
-  }
+  model.materials[0].shader = shader;
 
   Model *allocated_model = (Model *)malloc(sizeof(Model));
   if (allocated_model == NULL) {
@@ -230,23 +174,11 @@ static void assign_model_to_chunk(World *world, VoxelMeshData *mesh_data, Chunk 
     return;
   }
   *allocated_model = model;
-  *model_ptr = allocated_model;
-  if (!has_model) {
-    if (cutout) {
-      VoxelChunk_EnableRenderPass(chunk, CUTOUT);
-    } else if (translucent_solid) {
-      VoxelChunk_EnableRenderPass(chunk, TRANSLUCENT_SOLID);
-    } else if (water) {
-      VoxelChunk_EnableRenderPass(chunk, TRANSLUCENT);
-    } else {
-      VoxelChunk_EnableRenderPass(chunk, SOLID);
-    }
-  }
+  *model_slot = allocated_model;
+  VoxelChunk_EnableRenderPass(chunk, pass);
 }
 
-void Mesher_RebuildChunk(struct World *world, Chunk *chunk, float ambient_multiplier) {
-  (void)ambient_multiplier;
-
+void Mesher_RebuildChunk(struct World *world, Chunk *chunk) {
   VoxelMesherConfig config = {
       .chunk_size_x = WORLD_CHUNK_SIZE_X,
       .chunk_size_y = WORLD_MAX_HEIGHT,
@@ -270,10 +202,11 @@ void Mesher_RebuildChunk(struct World *world, Chunk *chunk, float ambient_multip
   VoxelMesher_BuildChunk(chunk, &g_block_registry, &config, &callbacks, &solid_mesh, &cutout_mesh,
                          &translucent_solid_mesh, &water_mesh);
 
-  assign_model_to_chunk(world, &solid_mesh, chunk, false, false, false);
-  assign_model_to_chunk(world, &cutout_mesh, chunk, true, false, false);
-  assign_model_to_chunk(world, &translucent_solid_mesh, chunk, false, true, false);
-  assign_model_to_chunk(world, &water_mesh, chunk, false, false, true);
+  assign_model_to_chunk(world, &solid_mesh, chunk, SOLID, get_opaque_ao_shader());
+  assign_model_to_chunk(world, &cutout_mesh, chunk, CUTOUT, get_shader(&cutout_shader));
+  assign_model_to_chunk(world, &translucent_solid_mesh, chunk, TRANSLUCENT_SOLID,
+                        get_shader(&translucent_shader));
+  assign_model_to_chunk(world, &water_mesh, chunk, TRANSLUCENT, get_shader(&translucent_shader));
 
   VoxelMeshData_Free(&solid_mesh);
   VoxelMeshData_Free(&cutout_mesh);
@@ -282,21 +215,11 @@ void Mesher_RebuildChunk(struct World *world, Chunk *chunk, float ambient_multip
 }
 
 void Mesher_Shutdown(void) {
-  if (cutout_shader_loaded && cutout_shader.id != 0) {
-    UnloadShader(cutout_shader);
+  for (size_t i = 0; i < sizeof(all_shaders) / sizeof(all_shaders[0]); i++) {
+    if (all_shaders[i]->loaded && all_shaders[i]->shader.id != 0) {
+      UnloadShader(all_shaders[i]->shader);
+    }
+    all_shaders[i]->shader = (Shader){0};
+    all_shaders[i]->loaded = false;
   }
-  cutout_shader = (Shader){0};
-  cutout_shader_loaded = false;
-
-  if (opaque_ao_shader_loaded && opaque_ao_shader.id != 0) {
-    UnloadShader(opaque_ao_shader);
-  }
-  opaque_ao_shader = (Shader){0};
-  opaque_ao_shader_loaded = false;
-
-  if (translucent_shader_loaded && translucent_shader.id != 0) {
-    UnloadShader(translucent_shader);
-  }
-  translucent_shader = (Shader){0};
-  translucent_shader_loaded = false;
 }

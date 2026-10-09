@@ -17,7 +17,6 @@
 
 #define GAME_PREDICTION_HISTORY_SIZE 256u
 #define GAME_INPUT_HISTORY_SIZE 256u
-#define GAME_PENDING_BREAK_OPS_MAX 64u
 
 typedef struct PredictedPlayerSample {
   uint32_t tick_id;
@@ -32,16 +31,6 @@ typedef struct GameplayInputHistoryEntry {
   GameplayInputCmd cmd;
   bool valid;
 } GameplayInputHistoryEntry;
-
-typedef struct PendingBreakOp {
-  int x;
-  int y;
-  int z;
-  uint8_t previous_block_id;
-  uint8_t previous_skylight;
-  uint32_t sent_tick;
-  bool active;
-} PendingBreakOp;
 
 typedef struct Game {
   World world;
@@ -74,10 +63,8 @@ typedef struct Game {
   bool fly_enabled;
   PredictedPlayerSample prediction_history[GAME_PREDICTION_HISTORY_SIZE];
   GameplayInputHistoryEntry input_history[GAME_INPUT_HISTORY_SIZE];
-  PendingBreakOp pending_break_ops[GAME_PENDING_BREAK_OPS_MAX];
   float view_yaw;
   float view_pitch;
-  bool view_initialized;
   bool suppress_next_frame_look;
 
   bool break_visual_active;

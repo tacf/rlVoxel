@@ -4,78 +4,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "constants.h"
 #include "net/protocol.h"
 #include "net/transport.h"
 
 struct NetEndpoint {
   ITransportEndpoint *transport;
   bool owns_transport;
-};
-
-typedef bool (*NetDecodeFn)(const uint8_t *data, size_t size, NetMessageHeader *header,
-                            NetEvent *event);
-
-typedef struct NetDecodeEntry {
-  NetMessageType type;
-  NetDecodeFn decode_fn;
-} NetDecodeEntry;
-
-static bool net_decode_hello(const uint8_t *data, size_t size, NetMessageHeader *header,
-                             NetEvent *event) {
-  return Protocol_DecodeHello(data, size, header, &event->payload.hello);
-}
-
-static bool net_decode_welcome(const uint8_t *data, size_t size, NetMessageHeader *header,
-                               NetEvent *event) {
-  return Protocol_DecodeWelcome(data, size, header, &event->payload.welcome);
-}
-
-static bool net_decode_input_cmd(const uint8_t *data, size_t size, NetMessageHeader *header,
-                                 NetEvent *event) {
-  return Protocol_DecodeInputCmd(data, size, header, &event->payload.input_cmd);
-}
-
-static bool net_decode_player_move(const uint8_t *data, size_t size, NetMessageHeader *header,
-                                   NetEvent *event) {
-  return Protocol_DecodePlayerMove(data, size, header, &event->payload.player_move);
-}
-
-static bool net_decode_player_state(const uint8_t *data, size_t size, NetMessageHeader *header,
-                                    NetEvent *event) {
-  return Protocol_DecodePlayerState(data, size, header, &event->payload.player_state);
-}
-
-static bool net_decode_chunk_data(const uint8_t *data, size_t size, NetMessageHeader *header,
-                                  NetEvent *event) {
-  return Protocol_DecodeChunkData(data, size, header, &event->payload.chunk_data);
-}
-
-static bool net_decode_block_delta(const uint8_t *data, size_t size, NetMessageHeader *header,
-                                   NetEvent *event) {
-  return Protocol_DecodeBlockDelta(data, size, header, &event->payload.block_delta);
-}
-
-static bool net_decode_chunk_unload(const uint8_t *data, size_t size, NetMessageHeader *header,
-                                    NetEvent *event) {
-  return Protocol_DecodeChunkUnload(data, size, header, &event->payload.chunk_unload);
-}
-
-static bool net_decode_disconnect(const uint8_t *data, size_t size, NetMessageHeader *header,
-                                  NetEvent *event) {
-  return Protocol_DecodeDisconnect(data, size, header, &event->payload.disconnect);
-}
-
-static const NetDecodeEntry k_net_decode_table[] = {
-    {NET_MSG_C2S_HELLO, net_decode_hello},
-    {NET_MSG_S2C_WELCOME, net_decode_welcome},
-    {NET_MSG_C2S_INPUT_CMD, net_decode_input_cmd},
-    {NET_MSG_C2S_PLAYER_MOVE, net_decode_player_move},
-    {NET_MSG_S2C_PLAYER_STATE, net_decode_player_state},
-    {NET_MSG_S2C_CHUNK_DATA, net_decode_chunk_data},
-    {NET_MSG_S2C_BLOCK_DELTA, net_decode_block_delta},
-    {NET_MSG_S2C_CHUNK_UNLOAD, net_decode_chunk_unload},
-    {NET_MSG_S2C_DISCONNECT, net_decode_disconnect},
 };
 
 static NetEndpoint *net_wrap_transport(ITransportEndpoint *transport, bool owns_transport) {
@@ -95,24 +29,6 @@ static NetEndpoint *net_wrap_transport(ITransportEndpoint *transport, bool owns_
   endpoint->transport = transport;
   endpoint->owns_transport = owns_transport;
   return endpoint;
-}
-
-static void net_message_route(NetMessageType message_type, uint8_t *out_channel,
-                              NetReliability *out_reliability) {
-  if (out_channel == NULL || out_reliability == NULL) {
-    return;
-  }
-
-  if (message_type == NET_MSG_C2S_PLAYER_MOVE) {
-    *out_channel = 1u;
-    *out_reliability = NET_UNRELIABLE;
-  } else if (message_type == NET_MSG_C2S_INPUT_CMD || message_type == NET_MSG_S2C_PLAYER_STATE) {
-    *out_channel = 1u;
-    *out_reliability = NET_RELIABLE;
-  } else {
-    *out_channel = 0u;
-    *out_reliability = NET_RELIABLE;
-  }
 }
 
 static bool net_decode_packet(const TransportEvent *event, NetEvent *out_event) {
@@ -135,14 +51,35 @@ static bool net_decode_packet(const TransportEvent *event, NetEvent *out_event) 
   out_event->channel = event->channel;
   out_event->packet_size = event->size;
 
-  for (size_t i = 0; i < (sizeof(k_net_decode_table) / sizeof(k_net_decode_table[0])); i++) {
-    if (k_net_decode_table[i].type == (NetMessageType)header.type) {
-      return k_net_decode_table[i].decode_fn(event->data, event->size, &out_event->header,
-                                             out_event);
-    }
+  const uint8_t *data = event->data;
+  size_t size = event->size;
+  switch (out_event->message_type) {
+  case NET_MSG_C2S_HELLO:
+    return Protocol_DecodeHello(data, size, &out_event->header, &out_event->payload.hello);
+  case NET_MSG_S2C_WELCOME:
+    return Protocol_DecodeWelcome(data, size, &out_event->header, &out_event->payload.welcome);
+  case NET_MSG_C2S_INPUT_CMD:
+    return Protocol_DecodeInputCmd(data, size, &out_event->header, &out_event->payload.input_cmd);
+  case NET_MSG_C2S_PLAYER_MOVE:
+    return Protocol_DecodePlayerMove(data, size, &out_event->header,
+                                     &out_event->payload.player_move);
+  case NET_MSG_S2C_PLAYER_STATE:
+    return Protocol_DecodePlayerState(data, size, &out_event->header,
+                                      &out_event->payload.player_state);
+  case NET_MSG_S2C_CHUNK_DATA:
+    return Protocol_DecodeChunkData(data, size, &out_event->header, &out_event->payload.chunk_data);
+  case NET_MSG_S2C_BLOCK_DELTA:
+    return Protocol_DecodeBlockDelta(data, size, &out_event->header,
+                                     &out_event->payload.block_delta);
+  case NET_MSG_S2C_CHUNK_UNLOAD:
+    return Protocol_DecodeChunkUnload(data, size, &out_event->header,
+                                      &out_event->payload.chunk_unload);
+  case NET_MSG_S2C_DISCONNECT:
+    return Protocol_DecodeDisconnect(data, size, &out_event->header,
+                                     &out_event->payload.disconnect);
+  default:
+    return false;
   }
-
-  return false;
 }
 
 NetEndpoint *Net_Connect(const char *host, uint16_t port) {
@@ -247,184 +184,33 @@ bool Net_SendPacket(NetEndpoint *endpoint, const uint8_t *data, size_t size, uin
 bool Net_SendHello(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick, const NetHello *hello) {
   uint8_t buffer[64];
   size_t size = 0;
-  uint8_t channel = 0;
-  NetReliability reliability = NET_RELIABLE;
-
-  if (endpoint == NULL || hello == NULL) {
-    return false;
-  }
 
   if (!Protocol_EncodeHello(sequence, tick, hello, buffer, sizeof(buffer), &size)) {
     return false;
   }
-
-  net_message_route(NET_MSG_C2S_HELLO, &channel, &reliability);
-  return Net_SendPacket(endpoint, buffer, size, channel, reliability, 0);
-}
-
-bool Net_SendWelcome(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
-                     const NetWelcome *welcome) {
-  uint8_t buffer[64];
-  size_t size = 0;
-  uint8_t channel = 0;
-  NetReliability reliability = NET_RELIABLE;
-
-  if (endpoint == NULL || welcome == NULL) {
-    return false;
-  }
-
-  if (!Protocol_EncodeWelcome(sequence, tick, welcome, buffer, sizeof(buffer), &size)) {
-    return false;
-  }
-
-  net_message_route(NET_MSG_S2C_WELCOME, &channel, &reliability);
-  return Net_SendPacket(endpoint, buffer, size, channel, reliability, 0);
+  return Net_SendPacket(endpoint, buffer, size, 0, NET_RELIABLE, 0);
 }
 
 bool Net_SendInputCmd(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
                       const GameplayInputCmd *input_cmd) {
   uint8_t buffer[128];
   size_t size = 0;
-  uint8_t channel = 1;
-  NetReliability reliability = NET_RELIABLE;
-
-  if (endpoint == NULL || input_cmd == NULL) {
-    return false;
-  }
 
   if (!Protocol_EncodeInputCmd(sequence, tick, input_cmd, buffer, sizeof(buffer), &size)) {
     return false;
   }
-
-  net_message_route(NET_MSG_C2S_INPUT_CMD, &channel, &reliability);
-  return Net_SendPacket(endpoint, buffer, size, channel, reliability, 0);
+  return Net_SendPacket(endpoint, buffer, size, 1, NET_RELIABLE, 0);
 }
 
 bool Net_SendPlayerMove(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
                         const NetPlayerMove *player_move) {
   uint8_t buffer[128];
   size_t size = 0;
-  uint8_t channel = 1;
-  NetReliability reliability = NET_UNRELIABLE;
-
-  if (endpoint == NULL || player_move == NULL) {
-    return false;
-  }
 
   if (!Protocol_EncodePlayerMove(sequence, tick, player_move, buffer, sizeof(buffer), &size)) {
     return false;
   }
-
-  net_message_route(NET_MSG_C2S_PLAYER_MOVE, &channel, &reliability);
-  return Net_SendPacket(endpoint, buffer, size, channel, reliability, 0);
-}
-
-bool Net_SendPlayerState(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
-                         const AuthoritativePlayerState *player_state) {
-  uint8_t buffer[128];
-  size_t size = 0;
-  uint8_t channel = 1;
-  NetReliability reliability = NET_RELIABLE;
-
-  if (endpoint == NULL || player_state == NULL) {
-    return false;
-  }
-
-  if (!Protocol_EncodePlayerState(sequence, tick, player_state, buffer, sizeof(buffer), &size)) {
-    return false;
-  }
-
-  net_message_route(NET_MSG_S2C_PLAYER_STATE, &channel, &reliability);
-  return Net_SendPacket(endpoint, buffer, size, channel, reliability, 0);
-}
-
-bool Net_SendChunkData(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
-                       const NetChunkData *chunk_data) {
-  uint8_t *buffer;
-  size_t size = 0;
-  size_t capacity;
-  bool ok;
-  uint8_t channel = 0;
-  NetReliability reliability = NET_RELIABLE;
-
-  if (endpoint == NULL || chunk_data == NULL) {
-    return false;
-  }
-
-  capacity = Protocol_HeaderSize() + 8 + WORLD_CHUNK_VOLUME + WORLD_CHUNK_LIGHT_BYTES +
-             (WORLD_CHUNK_SIZE_X * WORLD_CHUNK_SIZE_Z);
-  buffer = (uint8_t *)malloc(capacity);
-  if (buffer == NULL) {
-    return false;
-  }
-
-  ok = Protocol_EncodeChunkData(sequence, tick, chunk_data, buffer, capacity, &size);
-  if (!ok) {
-    free(buffer);
-    return false;
-  }
-
-  net_message_route(NET_MSG_S2C_CHUNK_DATA, &channel, &reliability);
-  ok = Net_SendPacket(endpoint, buffer, size, channel, reliability, 0);
-  free(buffer);
-  return ok;
-}
-
-bool Net_SendBlockDelta(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
-                        const NetBlockDelta *block_delta) {
-  uint8_t buffer[64];
-  size_t size = 0;
-  uint8_t channel = 0;
-  NetReliability reliability = NET_RELIABLE;
-
-  if (endpoint == NULL || block_delta == NULL) {
-    return false;
-  }
-
-  if (!Protocol_EncodeBlockDelta(sequence, tick, block_delta, buffer, sizeof(buffer), &size)) {
-    return false;
-  }
-
-  net_message_route(NET_MSG_S2C_BLOCK_DELTA, &channel, &reliability);
-  return Net_SendPacket(endpoint, buffer, size, channel, reliability, 0);
-}
-
-bool Net_SendChunkUnload(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
-                         const NetChunkUnload *chunk_unload) {
-  uint8_t buffer[64];
-  size_t size = 0;
-  uint8_t channel = 0;
-  NetReliability reliability = NET_RELIABLE;
-
-  if (endpoint == NULL || chunk_unload == NULL) {
-    return false;
-  }
-
-  if (!Protocol_EncodeChunkUnload(sequence, tick, chunk_unload, buffer, sizeof(buffer), &size)) {
-    return false;
-  }
-
-  net_message_route(NET_MSG_S2C_CHUNK_UNLOAD, &channel, &reliability);
-  return Net_SendPacket(endpoint, buffer, size, channel, reliability, 0);
-}
-
-bool Net_SendDisconnect(NetEndpoint *endpoint, uint32_t sequence, uint32_t tick,
-                        const NetDisconnect *disconnect_msg) {
-  uint8_t buffer[256];
-  size_t size = 0;
-  uint8_t channel = 0;
-  NetReliability reliability = NET_RELIABLE;
-
-  if (endpoint == NULL || disconnect_msg == NULL) {
-    return false;
-  }
-
-  if (!Protocol_EncodeDisconnect(sequence, tick, disconnect_msg, buffer, sizeof(buffer), &size)) {
-    return false;
-  }
-
-  net_message_route(NET_MSG_S2C_DISCONNECT, &channel, &reliability);
-  return Net_SendPacket(endpoint, buffer, size, channel, reliability, 0);
+  return Net_SendPacket(endpoint, buffer, size, 1, NET_UNRELIABLE, 0);
 }
 
 void Net_Close(NetEndpoint *endpoint) {

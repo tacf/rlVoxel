@@ -30,12 +30,6 @@ static int64_t random_seed(void) {
   return t ^ (c << 21) ^ 0x9E3779B97F4A7C15LL;
 }
 
-static double now_seconds(void) {
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
-}
-
 int main(int argc, char **argv) {
   ServerConfig config = {
       .seed = random_seed(),
@@ -52,41 +46,30 @@ int main(int argc, char **argv) {
   strncpy(config.bind, "*", sizeof(config.bind) - 1);
 
   for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "--bind") == 0) {
-      if (i + 1 >= argc) {
-        print_usage(argv[0]);
-        return 1;
-      }
-      strncpy(config.bind, argv[++i], sizeof(config.bind) - 1);
-      config.bind[sizeof(config.bind) - 1] = '\0';
-    } else if (strcmp(argv[i], "--port") == 0) {
-      if (i + 1 >= argc) {
-        print_usage(argv[0]);
-        return 1;
-      }
-      config.port = (uint16_t)atoi(argv[++i]);
-    } else if (strcmp(argv[i], "--seed") == 0) {
-      if (i + 1 >= argc) {
-        print_usage(argv[0]);
-        return 1;
-      }
-      config.seed = strtoll(argv[++i], NULL, 10);
-      seeded = true;
-    } else if (strcmp(argv[i], "--render-distance") == 0) {
-      if (i + 1 >= argc) {
-        print_usage(argv[0]);
-        return 1;
-      }
-      config.render_distance = atoi(argv[++i]);
-    } else if (strcmp(argv[i], "--max-clients") == 0) {
-      if (i + 1 >= argc) {
-        print_usage(argv[0]);
-        return 1;
-      }
-      config.max_clients = atoi(argv[++i]);
-    } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+    const char *flag = argv[i];
+
+    if (strcmp(flag, "--help") == 0 || strcmp(flag, "-h") == 0) {
       print_usage(argv[0]);
       return 0;
+    }
+
+    if (i + 1 >= argc) {
+      print_usage(argv[0]);
+      return 1;
+    }
+    const char *value = argv[++i];
+
+    if (strcmp(flag, "--bind") == 0) {
+      strncpy(config.bind, value, sizeof(config.bind) - 1);
+    } else if (strcmp(flag, "--port") == 0) {
+      config.port = (uint16_t)atoi(value);
+    } else if (strcmp(flag, "--seed") == 0) {
+      config.seed = strtoll(value, NULL, 10);
+      seeded = true;
+    } else if (strcmp(flag, "--render-distance") == 0) {
+      config.render_distance = atoi(value);
+    } else if (strcmp(flag, "--max-clients") == 0) {
+      config.max_clients = atoi(value);
     } else {
       print_usage(argv[0]);
       return 1;
@@ -115,21 +98,15 @@ int main(int argc, char **argv) {
   signal(SIGINT, on_signal);
   signal(SIGTERM, on_signal);
 
-  double tick_dt = 1.0 / (double)config.tick_rate;
-  double next_tick = now_seconds();
+  if (!ServerCore_StartThread(&server)) {
+    fprintf(stderr, "Failed to start server thread.\n");
+    ServerCore_Shutdown(&server);
+    return 1;
+  }
 
-  while (g_server_running && ServerCore_IsRunning(&server)) {
-    double now = now_seconds();
-    if (now >= next_tick) {
-      ServerCore_Tick(&server);
-      next_tick += tick_dt;
-      if (now - next_tick > 0.5) {
-        next_tick = now + tick_dt;
-      }
-    } else {
-      struct timespec sleep_for = {.tv_sec = 0, .tv_nsec = 1000000L};
-      nanosleep(&sleep_for, NULL);
-    }
+  while (g_server_running) {
+    struct timespec sleep_for = {.tv_sec = 0, .tv_nsec = 100000000L};
+    nanosleep(&sleep_for, NULL);
   }
 
   ServerCore_Stop(&server);

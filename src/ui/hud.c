@@ -27,49 +27,29 @@ static Clay_String hud_clay_string(const char *text) {
 /* Reference-resolution scale, snapped to an integer >= 1 so pixel-font glyphs
  * (drawn through a point-filtered atlas) always land on whole screen pixels. */
 static float hud_scale(void) {
-  float sw = (float)GetScreenWidth();
-  float sh = (float)GetScreenHeight();
-  float scale = fminf(sw / 1280.0f, sh / 720.0f);
-  if (scale < 0.01f) {
-    scale = 0.01f;
-  }
-  scale = floorf(scale);
-  if (scale < 1.0f) {
-    scale = 1.0f;
-  }
-  return scale;
+  float scale = fminf((float)GetScreenWidth() / 1280.0f, (float)GetScreenHeight() / 720.0f);
+  return fmaxf(floorf(scale), 1.0f);
 }
 
 static Rectangle hud_block_source_rect(uint8_t block_id) {
   const float atlas_tile_size = 16.0f;
   int tile = Block_Texture(block_id, FACE_UP);
-  if (tile < 0) {
-    tile = 0;
-  }
 
-  int tile_x = tile % 16;
-  int tile_y = tile / 16;
   return (Rectangle){
-      .x = (float)tile_x * atlas_tile_size,
-      .y = (float)tile_y * atlas_tile_size,
+      .x = (float)(tile % 16) * atlas_tile_size,
+      .y = (float)(tile / 16) * atlas_tile_size,
       .width = atlas_tile_size,
       .height = atlas_tile_size,
   };
 }
 
 static Color hud_block_face_tint(uint8_t block_id, int face) {
-  uint8_t r = 255;
-  uint8_t g = 255;
-  uint8_t b = 255;
+  uint8_t r, g, b;
   Block_GetFaceTint(block_id, face, &r, &g, &b);
   return (Color){r, g, b, 255};
 }
 
 void HUD_BuildInfoPanel(const Player *player, const World *world) {
-  if (player == NULL || world == NULL) {
-    return;
-  }
-
   // static: so that pointers outlive this function, since Clay needs them later.
   static char fps_text[24];
   static char facing_text[24];
@@ -164,10 +144,6 @@ static HudHotbarMetrics hud_hotbar_metrics(void) {
 }
 
 void HUD_BuildHotbar(const Player *player) {
-  if (player == NULL) {
-    return;
-  }
-
   HudHotbarMetrics m = hud_hotbar_metrics();
 
   CLAY({
@@ -186,7 +162,7 @@ void HUD_BuildHotbar(const Player *player) {
         .layout =
             {
                 .sizing = {.width = CLAY_SIZING_FIXED(m.panel_width),
-                          .height = CLAY_SIZING_FIXED(m.panel_height)},
+                           .height = CLAY_SIZING_FIXED(m.panel_height)},
             },
     }) {}
   }
@@ -237,19 +213,9 @@ static void hud_draw_hotbar_background(const HudHotbarMetrics *m, const Player *
 }
 
 void HUD_DrawHotbar(Texture2D terrain_texture, const Player *player) {
-  if (player == NULL) {
-    return;
-  }
-
   HudHotbarMetrics m = hud_hotbar_metrics();
   int width = (int)ceilf(m.panel_width);
   int height = (int)ceilf(m.panel_height);
-  if (width < 1) {
-    width = 1;
-  }
-  if (height < 1) {
-    height = 1;
-  }
 
   bool dirty = !s_hotbar_cache.valid || s_hotbar_cache.width != width ||
                s_hotbar_cache.height != height || s_hotbar_cache.scale != m.scale ||

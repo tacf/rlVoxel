@@ -16,25 +16,11 @@ static fnl_state noise_create_state(fnl_noise_type noise_type, int seed) {
   return state;
 }
 
-static int noise_random_seed(Random *random) {
-  if (random == NULL) {
-    return 1337;
-  }
-  return Random_NextInt(random);
-}
+static int noise_random_seed(Random *random) { return Random_NextInt(random); }
 
-static double noise_random_coord(Random *random) {
-  if (random == NULL) {
-    return 0.0;
-  }
-  return Random_NextDouble(random) * 256.0;
-}
+static double noise_random_coord(Random *random) { return Random_NextDouble(random) * 256.0; }
 
 void PerlinNoise_Init(PerlinNoiseSampler *sampler, Random *random) {
-  if (sampler == NULL) {
-    return;
-  }
-
   sampler->x_coord = noise_random_coord(random);
   sampler->y_coord = noise_random_coord(random);
   sampler->z_coord = noise_random_coord(random);
@@ -42,10 +28,6 @@ void PerlinNoise_Init(PerlinNoiseSampler *sampler, Random *random) {
 }
 
 double PerlinNoise_Generate2D(const PerlinNoiseSampler *sampler, double x, double y) {
-  if (sampler == NULL) {
-    return 0.0;
-  }
-
   float value =
       fnlGetNoise2D(&sampler->state, (float)(x + sampler->x_coord), (float)(y + sampler->y_coord));
   return (double)value;
@@ -55,7 +37,7 @@ void PerlinNoise_Sample(const PerlinNoiseSampler *sampler, double *buffer, doubl
                         double y_start, double z_start, int x_size, int y_size, int z_size,
                         double x_frequency, double y_frequency, double z_frequency,
                         double inverse_amplitude) {
-  if (sampler == NULL || buffer == NULL || x_size <= 0 || y_size <= 0 || z_size <= 0) {
+  if (buffer == NULL || x_size <= 0 || y_size <= 0 || z_size <= 0) {
     return;
   }
 
@@ -79,10 +61,6 @@ void PerlinNoise_Sample(const PerlinNoiseSampler *sampler, double *buffer, doubl
 }
 
 void OctavePerlin_Init(OctavePerlinNoiseSampler *sampler, Random *random, int octave_count) {
-  if (sampler == NULL) {
-    return;
-  }
-
   if (octave_count < 1) {
     octave_count = 1;
   }
@@ -98,10 +76,6 @@ void OctavePerlin_Init(OctavePerlinNoiseSampler *sampler, Random *random, int oc
 }
 
 double OctavePerlin_Generate2D(const OctavePerlinNoiseSampler *sampler, double x, double y) {
-  if (sampler == NULL) {
-    return 0.0;
-  }
-
   double value = 0.0;
   double amplitude = 1.0;
 
@@ -117,7 +91,7 @@ double *OctavePerlin_Create3D(const OctavePerlinNoiseSampler *sampler, double *b
                               double x_start, double y_start, double z_start, int x_size,
                               int y_size, int z_size, double x_frequency, double y_frequency,
                               double z_frequency) {
-  if (sampler == NULL || x_size <= 0 || y_size <= 0 || z_size <= 0) {
+  if (x_size <= 0 || y_size <= 0 || z_size <= 0) {
     return buffer;
   }
 
@@ -151,10 +125,6 @@ double *OctavePerlin_Create2D(const OctavePerlinNoiseSampler *sampler, double *b
 }
 
 void SimplexNoise_Init(SimplexNoiseSampler *sampler, Random *random) {
-  if (sampler == NULL) {
-    return;
-  }
-
   sampler->x_coord = noise_random_coord(random);
   sampler->y_coord = noise_random_coord(random);
   sampler->z_coord = noise_random_coord(random);
@@ -164,7 +134,7 @@ void SimplexNoise_Init(SimplexNoiseSampler *sampler, Random *random) {
 void SimplexNoise_Sample(const SimplexNoiseSampler *sampler, double *buffer, double x, double z,
                          int width, int depth, double x_frequency, double z_frequency,
                          double amplitude) {
-  if (sampler == NULL || buffer == NULL || width <= 0 || depth <= 0) {
+  if (buffer == NULL || width <= 0 || depth <= 0) {
     return;
   }
 
@@ -182,10 +152,6 @@ void SimplexNoise_Sample(const SimplexNoiseSampler *sampler, double *buffer, dou
 }
 
 void OctaveSimplex_Init(OctaveSimplexNoiseSampler *sampler, Random *random, int octave_count) {
-  if (sampler == NULL) {
-    return;
-  }
-
   if (octave_count < 1) {
     octave_count = 1;
   }
@@ -203,7 +169,7 @@ void OctaveSimplex_Init(OctaveSimplexNoiseSampler *sampler, Random *random, int 
 double *OctaveSimplex_Sample(const OctaveSimplexNoiseSampler *sampler, double *buffer, double x,
                              double z, int width, int depth, double x_frequency, double z_frequency,
                              double frequency_scaler, double amplitude_scaler) {
-  if (sampler == NULL || width <= 0 || depth <= 0) {
+  if (width <= 0 || depth <= 0) {
     return buffer;
   }
 

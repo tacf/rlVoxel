@@ -6,7 +6,7 @@
 #include <stddef.h>
 
 static bool renderer_create_target(Renderer *renderer, int width, int height) {
-  if (renderer == NULL || width <= 0 || height <= 0) {
+  if (width <= 0 || height <= 0) {
     return false;
   }
 
@@ -19,7 +19,7 @@ static bool renderer_create_target(Renderer *renderer, int width, int height) {
 }
 
 static void renderer_update_resolution_uniform(Renderer *renderer) {
-  if (renderer == NULL || renderer->fxaa.id == 0 || renderer->fxaa_resolution_loc < 0) {
+  if (renderer->fxaa.id == 0 || renderer->fxaa_resolution_loc < 0) {
     return;
   }
 
@@ -29,10 +29,6 @@ static void renderer_update_resolution_uniform(Renderer *renderer) {
 }
 
 static bool renderer_ensure_target_size(Renderer *renderer) {
-  if (renderer == NULL) {
-    return false;
-  }
-
   int width = GetScreenWidth();
   int height = GetScreenHeight();
   int downscale = (renderer->pixelate_enabled && renderer->pixelate_downscale > 1)
@@ -64,10 +60,6 @@ static bool renderer_ensure_target_size(Renderer *renderer) {
 }
 
 bool Renderer_Init(Renderer *renderer) {
-  if (renderer == NULL) {
-    return false;
-  }
-
   *renderer = (Renderer){0};
 
   char fxaa_path[256];
@@ -92,10 +84,6 @@ bool Renderer_Init(Renderer *renderer) {
 }
 
 void Renderer_Shutdown(Renderer *renderer) {
-  if (renderer == NULL) {
-    return;
-  }
-
   if (renderer->target.id != 0) {
     UnloadRenderTexture(renderer->target);
   }
@@ -107,9 +95,6 @@ void Renderer_Shutdown(Renderer *renderer) {
 }
 
 void Renderer_SetPixelateEnabled(Renderer *renderer, bool enabled) {
-  if (renderer == NULL) {
-    return;
-  }
   if (renderer->pixelate_enabled == enabled) {
     return;
   }
@@ -120,16 +105,9 @@ void Renderer_SetPixelateEnabled(Renderer *renderer, bool enabled) {
   }
 }
 
-bool Renderer_GetPixelateEnabled(const Renderer *renderer) {
-  if (renderer == NULL) {
-    return false;
-  }
-  return renderer->pixelate_enabled;
-}
-
 void Renderer_DrawFrame(Renderer *renderer, const Camera3D *camera, Color clear_color,
                         const RendererFrameCallbacks *callbacks) {
-  if (renderer == NULL || camera == NULL || callbacks == NULL || callbacks->draw_world == NULL) {
+  if (callbacks->draw_world == NULL) {
     return;
   }
 

@@ -28,42 +28,36 @@ int main(int argc, char **argv) {
   uint16_t connect_port = 56552;
 
   for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "--seed") == 0) {
-      if (i + 1 >= argc) {
-        print_usage(argv[0]);
-        return 1;
-      }
-      seed = strtoll(argv[++i], NULL, 10);
-      has_seed = true;
-    } else if (strcmp(argv[i], "--render-distance") == 0) {
-      if (i + 1 >= argc) {
-        print_usage(argv[0]);
-        return 1;
-      }
-      render_distance = atoi(argv[++i]);
-    } else if (strcmp(argv[i], "--connect") == 0) {
-      if (i + 1 >= argc) {
-        print_usage(argv[0]);
-        return 1;
-      }
-      const char *value = argv[++i];
-      const char *colon = strchr(value, ':');
-      if (colon != NULL) {
-        size_t host_len = (size_t)(colon - value);
-        if (host_len >= sizeof(connect_host)) {
-          host_len = sizeof(connect_host) - 1;
-        }
-        memcpy(connect_host, value, host_len);
-        connect_host[host_len] = '\0';
-        connect_port = (uint16_t)atoi(colon + 1);
-      } else {
-        strncpy(connect_host, value, sizeof(connect_host) - 1);
-        connect_host[sizeof(connect_host) - 1] = '\0';
-      }
-      has_connect = true;
-    } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+    const char *flag = argv[i];
+
+    if (strcmp(flag, "--help") == 0 || strcmp(flag, "-h") == 0) {
       print_usage(argv[0]);
       return 0;
+    }
+
+    if (i + 1 >= argc) {
+      print_usage(argv[0]);
+      return 1;
+    }
+    const char *value = argv[++i];
+
+    if (strcmp(flag, "--seed") == 0) {
+      seed = strtoll(value, NULL, 10);
+      has_seed = true;
+    } else if (strcmp(flag, "--render-distance") == 0) {
+      render_distance = atoi(value);
+    } else if (strcmp(flag, "--connect") == 0) {
+      const char *colon = strchr(value, ':');
+      size_t host_len = (colon != NULL) ? (size_t)(colon - value) : strlen(value);
+      if (host_len >= sizeof(connect_host)) {
+        host_len = sizeof(connect_host) - 1;
+      }
+      memcpy(connect_host, value, host_len);
+      connect_host[host_len] = '\0';
+      if (colon != NULL) {
+        connect_port = (uint16_t)atoi(colon + 1);
+      }
+      has_connect = true;
     } else {
       print_usage(argv[0]);
       return 1;
@@ -138,14 +132,7 @@ int main(int argc, char **argv) {
       accumulator = GAME_TICK_DT;
     }
 
-    float alpha = (float)(accumulator / GAME_TICK_DT);
-    if (alpha < 0.0f) {
-      alpha = 0.0f;
-    } else if (alpha > 1.0f) {
-      alpha = 1.0f;
-    }
-
-    Game_Draw(&game, alpha);
+    Game_Draw(&game, (float)(accumulator / GAME_TICK_DT));
 
     Profiler_EndFrame();
     Profiler_CaptureFrame();

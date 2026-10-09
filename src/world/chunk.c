@@ -5,28 +5,33 @@
 
 #include <stdlib.h>
 
+void **Chunk_ModelSlot(Chunk *chunk, uint8_t pass) {
+  switch (pass) {
+  case SOLID:
+    return &chunk->solid_model;
+  case TRANSLUCENT:
+    return &chunk->translucent_model;
+  case CUTOUT:
+    return &chunk->cutout_model;
+  default:
+    return &chunk->translucent_solid_model;
+  }
+}
+
+static void chunk_unload_model(Chunk *chunk, uint8_t pass) {
+  void **slot = Chunk_ModelSlot(chunk, pass);
+  if (VoxelChunk_HasRenderPass(chunk, pass) && *slot) {
+    UnloadModel(*(Model *)*slot);
+    free(*slot);
+    *slot = NULL;
+  }
+}
+
 void Chunk_Shutdown(Chunk *chunk) {
-  /* Unload raylib models */
-  if (VoxelChunk_HasRenderPass(chunk, SOLID) && chunk->solid_model) {
-    UnloadModel(*(Model *)chunk->solid_model);
-    free(chunk->solid_model);
-    chunk->solid_model = NULL;
-  }
-  if (VoxelChunk_HasRenderPass(chunk, TRANSLUCENT) && chunk->translucent_model) {
-    UnloadModel(*(Model *)chunk->translucent_model);
-    free(chunk->translucent_model);
-    chunk->translucent_model = NULL;
-  }
-  if (VoxelChunk_HasRenderPass(chunk, CUTOUT) && chunk->cutout_model) {
-    UnloadModel(*(Model *)chunk->cutout_model);
-    free(chunk->cutout_model);
-    chunk->cutout_model = NULL;
-  }
-  if (VoxelChunk_HasRenderPass(chunk, TRANSLUCENT_SOLID) && chunk->translucent_solid_model) {
-    UnloadModel(*(Model *)chunk->translucent_solid_model);
-    free(chunk->translucent_solid_model);
-    chunk->translucent_solid_model = NULL;
-  }
+  chunk_unload_model(chunk, SOLID);
+  chunk_unload_model(chunk, TRANSLUCENT);
+  chunk_unload_model(chunk, CUTOUT);
+  chunk_unload_model(chunk, TRANSLUCENT_SOLID);
   VoxelChunk_Shutdown(chunk, NULL);
 }
 

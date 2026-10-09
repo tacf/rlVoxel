@@ -13,16 +13,9 @@
 #include "world/blocks.h"
 #include "world/world.h"
 
-/* Pitch is clamped to ~89 degrees to prevent gimbal lock */
-#define PITCH_LIMIT 1.55f
-#define MOUSE_SENSITIVITY 0.0023f
 #define PLAYER_FLY_SPEED_TICK 0.38f
 
 static int player_wrap_hotbar_index(int index) {
-  if (PLAYER_HOTBAR_SLOTS <= 0) {
-    return 0;
-  }
-
   int wrapped = index % PLAYER_HOTBAR_SLOTS;
   if (wrapped < 0) {
     wrapped += PLAYER_HOTBAR_SLOTS;
@@ -80,13 +73,17 @@ Vector3 Player_GetEyePosition(const Player *player) {
   };
 }
 
-Vector3 Player_GetLookDirection(const Player *player) {
-  float cos_pitch = cosf(player->pitch);
+Vector3 Player_DirectionFromAngles(float yaw, float pitch) {
+  float cos_pitch = cosf(pitch);
   return Vector3Normalize((Vector3){
-      sinf(player->yaw) * cos_pitch,
-      sinf(player->pitch),
-      cosf(player->yaw) * cos_pitch,
+      sinf(yaw) * cos_pitch,
+      sinf(pitch),
+      cosf(yaw) * cos_pitch,
   });
+}
+
+Vector3 Player_GetLookDirection(const Player *player) {
+  return Player_DirectionFromAngles(player->yaw, player->pitch);
 }
 
 BoundingBox Player_GetBoundsAt(const Player *player, Vector3 position) {
@@ -118,12 +115,6 @@ void Player_Init(Player *player, Vector3 spawn_position) {
 }
 
 void Player_ApplyHotbarScroll(Player *player, float mouse_wheel_delta) {
-  if (player == NULL) {
-    return;
-  }
-
-  player->hotbar_index = player_wrap_hotbar_index(player->hotbar_index);
-
   if (mouse_wheel_delta != 0.0f) {
     int steps = (int)floorf(fabsf(mouse_wheel_delta));
     if (steps < 1) {
@@ -131,9 +122,7 @@ void Player_ApplyHotbarScroll(Player *player, float mouse_wheel_delta) {
     }
 
     int direction = (mouse_wheel_delta > 0.0f) ? -1 : 1;
-    for (int i = 0; i < steps; i++) {
-      player->hotbar_index = player_wrap_hotbar_index(player->hotbar_index + direction);
-    }
+    player->hotbar_index = player_wrap_hotbar_index(player->hotbar_index + direction * steps);
   }
 
   player->selected_block = player->hotbar_blocks[player->hotbar_index];
@@ -141,18 +130,14 @@ void Player_ApplyHotbarScroll(Player *player, float mouse_wheel_delta) {
 
 void Player_Update(Player *player, const World *world, const GameInputSnapshot *input,
                    float tick_dt, bool mouse_look_enabled, bool fly_enabled) {
-  if (!input) {
-    return;
-  }
-
   player->previous_position = player->position;
   player->previous_yaw = player->yaw;
   player->previous_pitch = player->pitch;
 
   if (mouse_look_enabled) {
-    player->yaw -= input->mouse_delta.x * MOUSE_SENSITIVITY;
-    player->pitch -= input->mouse_delta.y * MOUSE_SENSITIVITY;
-    player->pitch = Clamp(player->pitch, -PITCH_LIMIT, PITCH_LIMIT);
+    player->yaw -= input->mouse_delta.x * PLAYER_MOUSE_SENSITIVITY;
+    player->pitch -= input->mouse_delta.y * PLAYER_MOUSE_SENSITIVITY;
+    player->pitch = Clamp(player->pitch, -PLAYER_PITCH_LIMIT, PLAYER_PITCH_LIMIT);
   }
 
   float input_x = 0.0f;

@@ -5,4 +5,4 @@ add_library(voxel STATIC
 )
 
 target_include_directories(voxel PUBLIC include)
-target_include_directories(voxel PRIVATE src ${CMAKE_SOURCE_DIR}/build/_deps/stb-src)
+target_include_directories(voxel PRIVATE src ${stb_SOURCE_DIR})

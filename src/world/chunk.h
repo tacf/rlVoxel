@@ -16,7 +16,22 @@ static inline void Chunk_Init(Chunk *chunk, int cx, int cz) { VoxelChunk_Init(ch
 
 void Chunk_Shutdown(Chunk *chunk);
 
-static inline int Chunk_Index(int lx, int y, int lz) { return VoxelChunk_Index(lx, y, lz); }
+/* Pointer to the Model* a chunk keeps for the given VoxelChunkRenderPass. */
+void **Chunk_ModelSlot(Chunk *chunk, uint8_t pass);
+
+static inline int64_t make_chunk_key(int cx, int cz) {
+  /* Multiplication preserves signed chunk coordinates without shifting a negative value.
+   * Avoids undefined this way.
+   */
+  return (int64_t)cx * INT64_C(4294967296) + (uint32_t)cz;
+}
+
+static inline int floor_div16(int x) {
+  /* C division truncates toward zero, shenanigans with negative remainders. */
+  return x / 16 - (x % 16 < 0);
+}
+
+static inline int floor_mod16(int x) { return (unsigned int)x & 15u; }
 
 static inline uint8_t Chunk_GetBlock(const Chunk *chunk, int lx, int y, int lz) {
   return VoxelChunk_GetBlock(chunk, lx, y, lz);

@@ -37,6 +37,7 @@ void Player_Update(Player *player, const World *world, const GameInputSnapshot *
                    float tick_dt, bool mouse_look_enabled, bool fly_enabled);
 
 Vector3 Player_GetEyePosition(const Player *player);
+Vector3 Player_DirectionFromAngles(float yaw, float pitch);
 Vector3 Player_GetLookDirection(const Player *player);
 BoundingBox Player_GetBoundsAt(const Player *player, Vector3 position);
 

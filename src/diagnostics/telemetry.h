@@ -37,6 +37,4 @@ void Telemetry_Update(float dt);
 
 void Telemetry_DrawWindow(void);
 
-const Telemetry *Telemetry_Get(void);
-
 #endif

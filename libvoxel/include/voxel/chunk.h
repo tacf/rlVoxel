@@ -12,7 +12,6 @@
 // Flags bitwise operation macros
 #define FLAG_SET(n, f) ((n) |= (f))
 #define FLAG_CLEAR(n, f) ((n) &= ~(f))
-#define FLAG_TOGGLE(n, f) ((n) ^= (f))
 #define FLAG_IS_SET(n, f) (((n) & (f)) == (f))
 
 enum VoxelChunkState { GENERATED = 1u << 0, DIRTY = 1u << 1, LIGHTDIRTY = 1u << 2 };

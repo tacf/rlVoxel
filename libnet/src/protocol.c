@@ -19,43 +19,27 @@
 
 static bool ensure_space(size_t offset, size_t need, size_t cap) { return (offset + need) <= cap; }
 
-static void write_u16_le(uint8_t *dst, uint16_t value) {
-  dst[0] = (uint8_t)(value & 0xFFu);
-  dst[1] = (uint8_t)((value >> 8) & 0xFFu);
+static void write_le(uint8_t *dst, uint64_t value, int bytes) {
+  for (int i = 0; i < bytes; i++) {
+    dst[i] = (uint8_t)((value >> (8 * i)) & 0xFFu);
+  }
 }
 
-static void write_u32_le(uint8_t *dst, uint32_t value) {
-  dst[0] = (uint8_t)(value & 0xFFu);
-  dst[1] = (uint8_t)((value >> 8) & 0xFFu);
-  dst[2] = (uint8_t)((value >> 16) & 0xFFu);
-  dst[3] = (uint8_t)((value >> 24) & 0xFFu);
+static uint64_t read_le(const uint8_t *src, int bytes) {
+  uint64_t value = 0;
+  for (int i = 0; i < bytes; i++) {
+    value |= (uint64_t)src[i] << (8 * i);
+  }
+  return value;
 }
 
-static void write_u64_le(uint8_t *dst, uint64_t value) {
-  dst[0] = (uint8_t)(value & 0xFFu);
-  dst[1] = (uint8_t)((value >> 8) & 0xFFu);
-  dst[2] = (uint8_t)((value >> 16) & 0xFFu);
-  dst[3] = (uint8_t)((value >> 24) & 0xFFu);
-  dst[4] = (uint8_t)((value >> 32) & 0xFFu);
-  dst[5] = (uint8_t)((value >> 40) & 0xFFu);
-  dst[6] = (uint8_t)((value >> 48) & 0xFFu);
-  dst[7] = (uint8_t)((value >> 56) & 0xFFu);
-}
+static void write_u16_le(uint8_t *dst, uint16_t value) { write_le(dst, value, 2); }
+static void write_u32_le(uint8_t *dst, uint32_t value) { write_le(dst, value, 4); }
+static void write_u64_le(uint8_t *dst, uint64_t value) { write_le(dst, value, 8); }
 
-static uint16_t read_u16_le(const uint8_t *src) {
-  return (uint16_t)((uint16_t)src[0] | ((uint16_t)src[1] << 8));
-}
-
-static uint32_t read_u32_le(const uint8_t *src) {
-  return (uint32_t)((uint32_t)src[0] | ((uint32_t)src[1] << 8) | ((uint32_t)src[2] << 16) |
-                    ((uint32_t)src[3] << 24));
-}
-
-static uint64_t read_u64_le(const uint8_t *src) {
-  return (uint64_t)src[0] | ((uint64_t)src[1] << 8) | ((uint64_t)src[2] << 16) |
-         ((uint64_t)src[3] << 24) | ((uint64_t)src[4] << 32) | ((uint64_t)src[5] << 40) |
-         ((uint64_t)src[6] << 48) | ((uint64_t)src[7] << 56);
-}
+static uint16_t read_u16_le(const uint8_t *src) { return (uint16_t)read_le(src, 2); }
+static uint32_t read_u32_le(const uint8_t *src) { return (uint32_t)read_le(src, 4); }
+static uint64_t read_u64_le(const uint8_t *src) { return read_le(src, 8); }
 
 static size_t encode_header(uint8_t *out, size_t out_cap, NetMessageType type, uint32_t sequence,
                             uint32_t tick) {
@@ -451,8 +435,6 @@ bool Protocol_EncodeChunkData(uint32_t sequence, uint32_t tick, const NetChunkDa
 
 bool Protocol_DecodeChunkData(const uint8_t *data, size_t size, NetMessageHeader *out_header,
                               NetChunkDataOwned *out_msg) {
-  size_t payload = NET_PAYLOAD_CHUNK_DATA_BYTES;
-
   if (out_msg == NULL || !Protocol_ParseHeader(data, size, out_header) ||
       out_header->type != NET_MSG_S2C_CHUNK_DATA ||
       size < Protocol_FixedPacketSize(NET_MSG_S2C_CHUNK_DATA)) {

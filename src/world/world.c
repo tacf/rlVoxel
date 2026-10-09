@@ -56,43 +56,14 @@ static ChunkSortEntry *g_translucent_draw_entries = NULL;
 static ChunkSortEntry *g_cutout_draw_entries = NULL;
 static ChunkSortEntry *g_translucent_solid_draw_entries = NULL;
 
-static inline int64_t make_chunk_key(int cx, int cz) { return ((int64_t)cx << 32) | (uint32_t)cz; }
-
 enum {
   WORLD_DIRTY_QUEUE_NORMAL = 1,
   WORLD_DIRTY_QUEUE_PRIORITY = 2,
 };
 
-static int floor_div16(int x) {
-  if (x >= 0) {
-    return x >> 4;
-  }
-  return -(((-x) + 15) >> 4);
-}
-
-static int floor_mod16(int x) {
-  int m = x & 15;
-  if (m < 0) {
-    m += 16;
-  }
-  return m;
-}
-
-static LightUpdateQueue *world_queue(World *world) {
-  return (LightUpdateQueue *)world->light_queue_ptr;
-}
-
-static const LightUpdateQueue *world_queue_const(const World *world) {
-  return (const LightUpdateQueue *)world->light_queue_ptr;
-}
-
 static void world_enqueue_dirty_chunk_key(World *world, int64_t key, bool priority) {
   int entry_index;
   unsigned char queue_state;
-
-  if (world == NULL) {
-    return;
-  }
 
   queue_state = priority ? WORLD_DIRTY_QUEUE_PRIORITY : WORLD_DIRTY_QUEUE_NORMAL;
   entry_index = hmgeti(world->dirty_chunk_key_set, key);
@@ -118,10 +89,6 @@ static void world_enqueue_dirty_chunk(World *world, int cx, int cz, bool priorit
 static void world_compact_dirty_chunk_queue(int64_t **queue, ptrdiff_t *read_index) {
   ptrdiff_t len;
 
-  if (queue == NULL || read_index == NULL || *queue == NULL) {
-    return;
-  }
-
   len = arrlen(*queue);
   if (*read_index <= 0) {
     return;
@@ -142,10 +109,6 @@ static void world_compact_dirty_chunk_queue(int64_t **queue, ptrdiff_t *read_ind
 static bool world_dequeue_dirty_chunk_key(World *world, int64_t *out_key) {
   ptrdiff_t entry_index;
   int64_t key;
-
-  if (world == NULL || out_key == NULL) {
-    return false;
-  }
 
   while (world->dirty_chunk_priority_read_index < arrlen(world->dirty_chunk_priority_keys)) {
     key = world->dirty_chunk_priority_keys[world->dirty_chunk_priority_read_index++];
@@ -214,12 +177,7 @@ Chunk *World_GetOrCreateChunk(World *world, int cx, int cz) {
     VoxelChunk_SetState(chunk, GENERATED);
   }
 
-  int64_t key = make_chunk_key(cx, cz);
-  voxel_chunkmap_put(&world->chunks, key, chunk);
-
-  if (world->meshing_enabled && VoxelChunk_HasState(chunk, DIRTY)) {
-    world_enqueue_dirty_chunk_key(world, key, false);
-  }
+  voxel_chunkmap_put(&world->chunks, make_chunk_key(cx, cz), chunk);
 
   if (world->meshing_enabled) {
     World_MarkNeighborsDirty(world, cx, cz);
@@ -460,28 +418,12 @@ bool World_IsAABBInLava(const World *world, BoundingBox box) {
 
 float World_GetAmbientMultiplier(const World *world) {
   float t = fmodf(world->world_time, 24000.0f) / 24000.0f;
-  float phase = t - 0.25f;
-  if (phase < 0.0f) {
-    phase += 1.0f;
-  }
-  if (phase > 1.0f) {
-    phase -= 1.0f;
-  }
-
-  float sky = cosf(phase * 6.28318530718f) * 0.5f + 0.5f;
+  float sky = cosf((t - 0.25f) * 6.28318530718f) * 0.5f + 0.5f;
   return Clamp(0.22f + sky * 0.78f, 0.12f, 1.0f);
 }
 
 static void update_ambient_darkness(World *world) {
-  float ambient = World_GetAmbientMultiplier(world);
-  int darkness = (int)((1.0f - ambient) * 11.0f);
-  if (darkness < 0) {
-    darkness = 0;
-  }
-  if (darkness > 11) {
-    darkness = 11;
-  }
-  world->ambient_darkness = darkness;
+  world->ambient_darkness = (int)((1.0f - World_GetAmbientMultiplier(world)) * 11.0f);
 }
 
 static bool generate_next_chunk(World *world, int center_cx, int center_cz) {
@@ -533,28 +475,20 @@ static bool generate_next_chunk(World *world, int center_cx, int center_cz) {
 }
 
 static int world_chunk_generation_budget(const World *world) {
-  const LightUpdateQueue *queue = world_queue_const(world);
-  if (queue == NULL) {
-    return 2;
-  }
-  if (queue->count >= WORLD_LIGHT_QUEUE_OVERLOAD_THRESHOLD) {
+  if (world->light_queue->count >= WORLD_LIGHT_QUEUE_OVERLOAD_THRESHOLD) {
     return 0;
   }
-  if (queue->count >= WORLD_LIGHT_QUEUE_BACKLOG_THRESHOLD) {
+  if (world->light_queue->count >= WORLD_LIGHT_QUEUE_BACKLOG_THRESHOLD) {
     return 1;
   }
   return 2;
 }
 
 static int world_lighting_budget(const World *world) {
-  const LightUpdateQueue *queue = world_queue_const(world);
-  if (queue == NULL) {
-    return WORLD_LIGHT_NODES_PER_TICK_BASE;
-  }
-  if (queue->count >= WORLD_LIGHT_QUEUE_OVERLOAD_THRESHOLD) {
+  if (world->light_queue->count >= WORLD_LIGHT_QUEUE_OVERLOAD_THRESHOLD) {
     return WORLD_LIGHT_NODES_PER_TICK_OVERLOAD;
   }
-  if (queue->count >= WORLD_LIGHT_QUEUE_BACKLOG_THRESHOLD) {
+  if (world->light_queue->count >= WORLD_LIGHT_QUEUE_BACKLOG_THRESHOLD) {
     return WORLD_LIGHT_NODES_PER_TICK_BACKLOG;
   }
   return WORLD_LIGHT_NODES_PER_TICK_BASE;
@@ -603,18 +537,11 @@ static void unload_far_chunks(World *world, int center_cx, int center_cz) {
 
 static void world_init_internal(World *world, int64_t seed, int render_distance,
                                 Texture2D terrain_texture, bool authoritative_mode,
-                                bool meshing_enabled, bool warmup) {
+                                bool meshing_enabled) {
   memset(world, 0, sizeof(*world));
 
-  if (render_distance < 2) {
-    render_distance = 2;
-  }
-  if (render_distance > 12) {
-    render_distance = 12;
-  }
-
   world->seed = seed;
-  world->render_distance = render_distance;
+  world->render_distance = (int)Clamp((float)render_distance, 2.0f, 12.0f);
   world->terrain_texture = terrain_texture;
   world->world_time = 6000.0f;
   world->authoritative_mode = authoritative_mode;
@@ -625,15 +552,10 @@ static void world_init_internal(World *world, int64_t seed, int render_distance,
   Blocks_Init();
   if (authoritative_mode) {
     WorldGen_Init(&world->generator, seed);
-  }
 
-  if (authoritative_mode) {
-    LightUpdateQueue *queue = (LightUpdateQueue *)malloc(sizeof(LightUpdateQueue));
-    if (queue != NULL) {
-      LightQueue_Init(queue,
-                      WORLD_LIGHT_QUEUE_OVERLOAD_THRESHOLD + WORLD_LIGHT_QUEUE_CAPACITY_HEADROOM);
-      world->light_queue_ptr = queue;
-    }
+    world->light_queue = (LightUpdateQueue *)malloc(sizeof(LightUpdateQueue));
+    LightQueue_Init(world->light_queue,
+                    WORLD_LIGHT_QUEUE_OVERLOAD_THRESHOLD + WORLD_LIGHT_QUEUE_CAPACITY_HEADROOM);
   }
 
   const float offset = 0.05f;
@@ -642,7 +564,7 @@ static void world_init_internal(World *world, int64_t seed, int render_distance,
     world->light_lut[i] = (1.0f - factor) / (factor * 3.0f + 1.0f) * (1.0f - offset) + offset;
   }
 
-  if (authoritative_mode && warmup) {
+  if (authoritative_mode) {
     for (int cz = -1; cz <= 1; cz++) {
       for (int cx = -1; cx <= 1; cx++) {
         World_GetOrCreateChunk(world, cx, cz);
@@ -651,8 +573,7 @@ static void world_init_internal(World *world, int64_t seed, int render_distance,
 
     for (int i = 0; i < 12; i++) {
       Lighting_Process(world, world_lighting_budget(world));
-      const LightUpdateQueue *q = world_queue_const(world);
-      if (q == NULL || q->count == 0) {
+      if (world->light_queue->count == 0) {
         break;
       }
     }
@@ -661,16 +582,12 @@ static void world_init_internal(World *world, int64_t seed, int render_distance,
   update_ambient_darkness(world);
 }
 
-void World_Init(World *world, int64_t seed, int render_distance, Texture2D terrain_texture) {
-  world_init_internal(world, seed, render_distance, terrain_texture, true, true, true);
-}
-
 void World_InitServer(World *world, int64_t seed, int render_distance) {
-  world_init_internal(world, seed, render_distance, (Texture2D){0}, true, false, true);
+  world_init_internal(world, seed, render_distance, (Texture2D){0}, true, false);
 }
 
 void World_InitReplicated(World *world, int render_distance, Texture2D terrain_texture) {
-  world_init_internal(world, 0, render_distance, terrain_texture, false, true, false);
+  world_init_internal(world, 0, render_distance, terrain_texture, false, true);
 }
 
 void World_Shutdown(World *world) {
@@ -697,11 +614,10 @@ void World_Shutdown(World *world) {
     Mesher_Shutdown();
   }
 
-  if (world->light_queue_ptr != NULL) {
-    LightUpdateQueue *queue = world_queue(world);
-    LightQueue_Shutdown(queue);
-    free(queue);
-    world->light_queue_ptr = NULL;
+  if (world->light_queue != NULL) {
+    LightQueue_Shutdown(world->light_queue);
+    free(world->light_queue);
+    world->light_queue = NULL;
   }
 
   if (world->authoritative_mode) {
@@ -761,7 +677,7 @@ void World_Update(World *world, Vector3 player_pos, float dt) {
       Chunk *chunk = voxel_chunkmap_get(world->chunks, key);
       if (chunk && VoxelChunk_HasState(chunk, DIRTY)) {
         WORLD_LOG("Rebuilding chunk (%d, %d)", chunk->cx, chunk->cz);
-        Mesher_RebuildChunk(world, chunk, 1.0f);
+        Mesher_RebuildChunk(world, chunk);
         VoxelChunk_UnsetState(chunk, DIRTY);
 
         rebuild_budget--;
@@ -850,11 +766,10 @@ static void sort_chunks(ChunkSortEntry *entries, ptrdiff_t count, bool front_to_
  * Render pipeline: see docs/RENDERING.md for full documentation on
  * pass architecture, GL state, shaders, and raylib integration.
  */
-static void draw_chunk_models(ChunkSortEntry *entries, ptrdiff_t count, size_t model_offset,
-                              Color tint) {
+static void draw_chunk_models(ChunkSortEntry *entries, ptrdiff_t count, uint8_t pass, Color tint) {
   for (ptrdiff_t i = 0; i < count; i++) {
     Chunk *chunk = entries[i].chunk;
-    Model *model = *(Model **)((char *)chunk + model_offset);
+    Model *model = *(Model **)Chunk_ModelSlot(chunk, pass);
     if (model == NULL)
       continue;
     Vector3 pos = {(float)(chunk->cx * WORLD_CHUNK_SIZE_X), 0.0f,
@@ -872,7 +787,7 @@ static Color make_ambient_tint(unsigned char ambient, unsigned char alpha) {
  * Depth: read+write. Blend: none. Cull: back faces. Sort: front-to-back.
  */
 static void draw_solid_pass(ChunkSortEntry *entries, ptrdiff_t count, Color tint) {
-  draw_chunk_models(entries, count, offsetof(Chunk, solid_model), tint);
+  draw_chunk_models(entries, count, SOLID, tint);
 }
 
 /*
@@ -881,7 +796,7 @@ static void draw_solid_pass(ChunkSortEntry *entries, ptrdiff_t count, Color tint
  */
 static void draw_cutout_pass(ChunkSortEntry *entries, ptrdiff_t count, Color tint) {
   rlDisableBackfaceCulling();
-  draw_chunk_models(entries, count, offsetof(Chunk, cutout_model), tint);
+  draw_chunk_models(entries, count, CUTOUT, tint);
   rlEnableBackfaceCulling();
 }
 
@@ -891,7 +806,7 @@ static void draw_cutout_pass(ChunkSortEntry *entries, ptrdiff_t count, Color tin
  */
 static void draw_translucent_solid_pass(ChunkSortEntry *entries, ptrdiff_t count, Color tint) {
   rlDisableBackfaceCulling();
-  draw_chunk_models(entries, count, offsetof(Chunk, translucent_solid_model), tint);
+  draw_chunk_models(entries, count, TRANSLUCENT_SOLID, tint);
   rlEnableBackfaceCulling();
 }
 
@@ -902,13 +817,13 @@ static void draw_translucent_solid_pass(ChunkSortEntry *entries, ptrdiff_t count
 static void draw_water_pass(ChunkSortEntry *entries, ptrdiff_t count, Color tint) {
   rlDisableBackfaceCulling();
   rlDisableDepthMask();
-  draw_chunk_models(entries, count, offsetof(Chunk, translucent_model), tint);
+  draw_chunk_models(entries, count, TRANSLUCENT, tint);
   rlEnableDepthMask();
   rlEnableBackfaceCulling();
 }
 
 void World_Draw(World *world, const Camera3D *camera, float ambient_multiplier) {
-  if (world == NULL || camera == NULL || !world->meshing_enabled) {
+  if (!world->meshing_enabled) {
     return;
   }
 
@@ -917,9 +832,7 @@ void World_Draw(World *world, const Camera3D *camera, float ambient_multiplier) 
   int rd = world->render_distance + 1;
 
   unsigned char a = (unsigned char)(Clamp(ambient_multiplier, 0.15f, 1.0f) * 255.0f);
-  Color solid_tint = make_ambient_tint(a, 255);
-  Color cutout_tint = make_ambient_tint(a, 255);
-  Color translucent_solid_tint = make_ambient_tint(a, 255);
+  Color opaque_tint = make_ambient_tint(a, 255);
   Color water_tint = make_ambient_tint(a, 180);
 
   collect_visible_chunks(world, cam_cx, cam_cz, camera->position.x, camera->position.z, rd);
@@ -934,10 +847,9 @@ void World_Draw(World *world, const Camera3D *camera, float ambient_multiplier) 
   sort_chunks(g_translucent_solid_draw_entries, tsolid_count, true);
   sort_chunks(g_translucent_draw_entries, water_count, false);
 
-  draw_solid_pass(g_solid_draw_entries, solid_count, solid_tint);
-  draw_cutout_pass(g_cutout_draw_entries, cutout_count, cutout_tint);
-  draw_translucent_solid_pass(g_translucent_solid_draw_entries, tsolid_count,
-                              translucent_solid_tint);
+  draw_solid_pass(g_solid_draw_entries, solid_count, opaque_tint);
+  draw_cutout_pass(g_cutout_draw_entries, cutout_count, opaque_tint);
+  draw_translucent_solid_pass(g_translucent_solid_draw_entries, tsolid_count, opaque_tint);
   draw_water_pass(g_translucent_draw_entries, water_count, water_tint);
 }
 
@@ -946,10 +858,6 @@ bool World_ApplyChunkData(World *world, int cx, int cz, const uint8_t *blocks, s
                           size_t heightmap_size) {
   Chunk *chunk;
   int64_t key;
-
-  if (world == NULL || blocks == NULL || skylight == NULL || heightmap == NULL) {
-    return false;
-  }
 
   if (blocks_size != WORLD_CHUNK_VOLUME || skylight_size != WORLD_CHUNK_LIGHT_BYTES ||
       heightmap_size != (WORLD_CHUNK_SIZE_X * WORLD_CHUNK_SIZE_Z)) {
@@ -974,14 +882,9 @@ bool World_ApplyChunkData(World *world, int cx, int cz, const uint8_t *blocks, s
   VoxelChunk_SetState(chunk, GENERATED);
   VoxelChunk_UnsetState(chunk, LIGHTDIRTY);
   if (world->meshing_enabled) {
-    VoxelChunk_SetState(chunk, DIRTY);
+    World_MarkNeighborsDirty(world, cx, cz);
   } else {
     VoxelChunk_UnsetState(chunk, DIRTY);
-  }
-
-  if (world->meshing_enabled) {
-    World_MarkChunkDirty(world, cx, cz);
-    World_MarkNeighborsDirty(world, cx, cz);
   }
 
   return true;
@@ -991,7 +894,7 @@ bool World_ApplyBlockDelta(World *world, int x, int y, int z, uint8_t block_id, 
   int cx, cz, lx, lz;
   Chunk *chunk;
 
-  if (world == NULL || y < 0 || y >= WORLD_MAX_HEIGHT) {
+  if (y < 0 || y >= WORLD_MAX_HEIGHT) {
     return false;
   }
 
@@ -1022,10 +925,6 @@ bool World_RemoveChunk(World *world, int cx, int cz) {
   int64_t key;
   Chunk *chunk;
 
-  if (world == NULL) {
-    return false;
-  }
-
   key = make_chunk_key(cx, cz);
   chunk = voxel_chunkmap_get(world->chunks, key);
   if (chunk == NULL) {
@@ -1040,9 +939,6 @@ bool World_RemoveChunk(World *world, int cx, int cz) {
 }
 
 void World_SetTime(World *world, float world_time) {
-  if (world == NULL) {
-    return;
-  }
   world->world_time = world_time;
   update_ambient_darkness(world);
 }

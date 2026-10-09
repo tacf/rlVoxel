@@ -6,6 +6,5 @@ void ProfilerRenderer_Shutdown(void);
 
 void ProfilerRenderer_DrawStatsTable(void);
 void ProfilerRenderer_DrawFrameGraph(void);
-void ProfilerRenderer_DrawConfigWindow(void);
 
 #endif

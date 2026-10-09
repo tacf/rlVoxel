@@ -12,18 +12,13 @@
  * Tracks per-message packet/byte counters, recent packet log entries,
  * and input->server-confirm RTT estimates using `confirm_ref` bookkeeping.
  *
- * Lifecycle:
- * - Optional explicit `NetProfiler_Init()` on startup.
- * - Safe lazy-init on first record/draw call.
- * - `NetProfiler_Shutdown()` clears all state.
+ * Lifecycle: `NetProfiler_Init()` on startup, `NetProfiler_Shutdown()` clears all state.
  */
 
 /** Initializes profiler state and starts uptime timer. */
 void NetProfiler_Init(void);
-/** Clears all profiler state and marks profiler uninitialized. */
+/** Clears all profiler state. */
 void NetProfiler_Shutdown(void);
-/** Resets counters/history while preserving initialization state. */
-void NetProfiler_Reset(void);
 
 /**
  * Records one outgoing packet event.

@@ -85,10 +85,6 @@ static unsigned char *clouds_generate_cell_map(int noise_size, int block_px, int
 }
 
 void Clouds_Init(Clouds *clouds) {
-  if (clouds == NULL) {
-    return;
-  }
-
   *clouds = *clouds;
 
   clouds->cell_map =
@@ -96,10 +92,6 @@ void Clouds_Init(Clouds *clouds) {
 }
 
 void Clouds_Shutdown(Clouds *clouds) {
-  if (clouds == NULL) {
-    return;
-  }
-
   if (clouds->cell_map != NULL) {
     free(clouds->cell_map);
   }
@@ -107,7 +99,7 @@ void Clouds_Shutdown(Clouds *clouds) {
 }
 
 void Clouds_Update(Clouds *clouds, float dt) {
-  if (clouds == NULL || dt <= 0.0f) {
+  if (dt <= 0.0f) {
     return;
   }
 
@@ -115,7 +107,7 @@ void Clouds_Update(Clouds *clouds, float dt) {
 }
 
 void Clouds_Draw(Clouds *clouds, const Camera3D *camera, float ambient_multiplier) {
-  if (clouds == NULL || camera == NULL || clouds->cell_map == NULL || clouds->grid_size <= 0) {
+  if (clouds->cell_map == NULL || clouds->grid_size <= 0) {
     return;
   }
 

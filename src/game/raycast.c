@@ -29,9 +29,8 @@ static float safe_inv(float v) {
  * This is a fast voxel traversal algorithm that walks through the grid
  * one voxel at a time, always stepping to the nearest boundary.
  */
-static bool Raycast_Voxel_Internal(const World *world, Vector3 origin, Vector3 direction,
-                                   float max_distance, bool include_replaceable,
-                                   VoxelRaycastHit *out_hit) {
+bool Raycast_VoxelForPlacement(const World *world, Vector3 origin, Vector3 direction,
+                               float max_distance, VoxelRaycastHit *out_hit) {
   memset(out_hit, 0, sizeof(*out_hit));
 
   if (Vector3Length(direction) < 1e-6f) {
@@ -81,11 +80,9 @@ static bool Raycast_Voxel_Internal(const World *world, Vector3 origin, Vector3 d
   while (traveled <= max_distance && y >= -1 && y < WORLD_MAX_HEIGHT + 1) {
     uint8_t block_id = World_GetBlock(world, x, y, z);
 
-    bool is_target = !Block_IsLiquid(block_id) && Block_IsSolid(block_id);
-    if (include_replaceable && block_id != BLOCK_AIR && !Block_IsLiquid(block_id) &&
-        Block_IsReplaceable(block_id)) {
-      is_target = true;
-    }
+    bool is_target =
+        !Block_IsLiquid(block_id) &&
+        (Block_IsSolid(block_id) || (block_id != BLOCK_AIR && Block_IsReplaceable(block_id)));
 
     if (is_target) {
       out_hit->hit = true;
@@ -137,14 +134,4 @@ static bool Raycast_Voxel_Internal(const World *world, Vector3 origin, Vector3 d
   }
 
   return false;
-}
-
-bool Raycast_Voxel(const World *world, Vector3 origin, Vector3 direction, float max_distance,
-                   VoxelRaycastHit *out_hit) {
-  return Raycast_Voxel_Internal(world, origin, direction, max_distance, false, out_hit);
-}
-
-bool Raycast_VoxelForPlacement(const World *world, Vector3 origin, Vector3 direction,
-                               float max_distance, VoxelRaycastHit *out_hit) {
-  return Raycast_Voxel_Internal(world, origin, direction, max_distance, true, out_hit);
 }

@@ -33,17 +33,6 @@ typedef struct ServerConfig {
   ServerMode mode;
 } ServerConfig;
 
-/** Raw encoded packet copied from server outgoing queue. */
-typedef struct ServerOutgoingMessage {
-  uint8_t *data;
-  size_t size;
-  uint8_t channel;
-  NetReliability reliability;
-  int client_id;
-} ServerOutgoingMessage;
-
-typedef struct ServerOutgoingNode ServerOutgoingNode;
-
 /**
  * Authoritative server runtime state.
  * Owns world simulation, player simulation, and network-facing queues.
@@ -69,10 +58,6 @@ typedef struct ServerCore {
   NetPlayerMove pending_move;
   bool pending_move_available;
   NetPlayerMove current_move;
-
-  pthread_mutex_t outgoing_mutex;
-  ServerOutgoingNode *outgoing_head;
-  ServerOutgoingNode *outgoing_tail;
 
   bool has_client;
   bool client_ready;
@@ -114,19 +99,5 @@ bool ServerCore_IsRunning(ServerCore *server);
 
 /** Runs one authoritative tick (used by thread loop and tests). */
 void ServerCore_Tick(ServerCore *server);
-/**
- * Submits latest gameplay action input for v1 client (latest-wins semantics).
- *
- * This is action-oriented input (click edges / selected block), while movement
- * snapshots are processed from NET_MSG_C2S_PLAYER_MOVE in server_core.c.
- */
-void ServerCore_SubmitInput(ServerCore *server, int client_id, const GameplayInputCmd *input);
-/** Pops next encoded outgoing packet produced by authoritative tick. */
-bool ServerCore_PollOutgoing(ServerCore *server, ServerOutgoingMessage *out_message);
-/** Releases heap ownership for data returned by ServerCore_PollOutgoing. */
-void ServerCore_FreeOutgoing(ServerOutgoingMessage *message);
-
-/** Returns current authoritative player snapshot from server state. */
-AuthoritativePlayerState ServerCore_GetAuthoritativePlayerState(ServerCore *server);
 
 #endif

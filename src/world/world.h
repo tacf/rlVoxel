@@ -30,7 +30,7 @@ typedef struct World {
   WorldGen generator;
 
   /** Queue for pending lighting updates */
-  LightUpdateQueue *light_queue_ptr;
+  LightUpdateQueue *light_queue;
 
   /** FIFO of normal-priority dirty chunk keys pending remesh processing */
   int64_t *dirty_chunk_keys;
@@ -67,14 +67,6 @@ typedef struct World {
   /** Client-only remesh throttle state (0 = allow remesh this tick). */
   uint8_t replicated_mesh_skip_ticks;
 } World;
-
-/**
- * Initializes a new world with the given seed.
- * @param seed Random seed for terrain generation
- * @param render_distance Chunks to render around player
- * @param terrain_texture The texture atlas to use for blocks
- */
-void World_Init(World *world, int64_t seed, int render_distance, Texture2D terrain_texture);
 
 /**
  * Initializes an authoritative server world without meshing/draw work.

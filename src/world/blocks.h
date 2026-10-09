@@ -15,7 +15,7 @@
 #define FACE_EAST VOXEL_FACE_EAST
 
 /**
- * Block IDs for rl-voxel game. Smililarities with other games 
+ * Block IDs for rl-voxel game. Smililarities with other games
  * are mere coincidences x)
  */
 typedef enum BlockId {
@@ -56,10 +56,6 @@ static inline bool Block_IsSolid(uint8_t block_id) {
 
 static inline bool Block_IsOpaque(uint8_t block_id) {
   return VoxelBlock_IsOpaque(&g_block_registry, block_id);
-}
-
-static inline bool Block_IsTranslucent(uint8_t block_id) {
-  return VoxelBlock_IsTranslucent(&g_block_registry, block_id);
 }
 
 static inline bool Block_IsLiquid(uint8_t block_id) {

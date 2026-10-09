@@ -8,10 +8,6 @@
 #include "raylib.h"
 
 void Game_CaptureFrameInput(GameInputSnapshot *input) {
-  if (!input) {
-    return;
-  }
-
   *input = (GameInputSnapshot){
       .move_forward = IsKeyDown(KEY_W),
       .move_backward = IsKeyDown(KEY_S),
@@ -33,10 +29,6 @@ void Game_CaptureFrameInput(GameInputSnapshot *input) {
 }
 
 void Game_MergeFrameInput(GameInputSnapshot *pending, const GameInputSnapshot *frame) {
-  if (!pending || !frame) {
-    return;
-  }
-
   pending->move_forward = frame->move_forward;
   pending->move_backward = frame->move_backward;
   pending->move_left = frame->move_left;
@@ -58,10 +50,6 @@ void Game_MergeFrameInput(GameInputSnapshot *pending, const GameInputSnapshot *f
 }
 
 void Game_ClearTickEdgeInput(GameInputSnapshot *input) {
-  if (!input) {
-    return;
-  }
-
   input->escape_pressed = false;
   input->debug_menu_pressed = false;
   input->cursor_lock_toggle_pressed = false;
@@ -77,17 +65,13 @@ void Game_BuildGameplayInputCmd(const GameInputSnapshot *input, uint32_t tick_id
                                 uint8_t selected_block, GameplayMode gameplay_mode,
                                 bool fly_enabled, bool gameplay_enabled,
                                 GameplayInputCmd *out_cmd) {
-  if (out_cmd == NULL) {
-    return;
-  }
-
   memset(out_cmd, 0, sizeof(*out_cmd));
   out_cmd->tick_id = tick_id;
   out_cmd->selected_block = selected_block;
   out_cmd->gameplay_mode = (uint8_t)gameplay_mode;
   out_cmd->fly_enabled = fly_enabled ? 1u : 0u;
 
-  if (!gameplay_enabled || input == NULL) {
+  if (!gameplay_enabled) {
     return;
   }
 

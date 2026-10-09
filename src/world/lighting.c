@@ -2,7 +2,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "stb_ds.h"
@@ -12,46 +11,13 @@
 #include "world/chunk.h"
 #include "world/world.h"
 
-static int clamp_light(int value) {
-  if (value < 0) {
-    return 0;
-  }
-  if (value > 15) {
-    return 15;
-  }
-  return value;
-}
-
-static void light_queue_compact(LightUpdateQueue *queue) {
-  if (queue == NULL) {
-    return;
-  }
-
-  ptrdiff_t len = arrlen(queue->items);
-  if (queue->read_index <= 0) {
-    return;
-  }
-
-  if (queue->read_index >= len) {
-    arrsetlen(queue->items, 0);
-    queue->read_index = 0;
-    queue->count = 0;
-    return;
-  }
-
-  if (queue->read_index > 1024 && queue->read_index * 2 >= len) {
-    arrdeln(queue->items, 0, queue->read_index);
-    queue->read_index = 0;
-  }
-}
-
 void LightQueue_Init(LightUpdateQueue *queue, int capacity) {
   memset(queue, 0, sizeof(*queue));
   if (capacity < 1024) {
     capacity = 1024;
   }
   queue->max_pending = capacity;
-  arrsetcap(queue->items, (size_t)capacity);
+  arrsetlen(queue->items, (size_t)capacity);
 }
 
 void LightQueue_Shutdown(LightUpdateQueue *queue) {
@@ -59,103 +25,59 @@ void LightQueue_Shutdown(LightUpdateQueue *queue) {
   memset(queue, 0, sizeof(*queue));
 }
 
-void LightQueue_Clear(LightUpdateQueue *queue) {
-  arrsetlen(queue->items, 0);
-  queue->read_index = 0;
-  queue->count = 0;
-}
-
-bool LightQueue_Push(LightUpdateQueue *queue, LightNode node) {
-  if (queue == NULL) {
-    return false;
+void LightQueue_Push(LightUpdateQueue *queue, LightNode node) {
+  size_t write_index = ((size_t)queue->read_index + (size_t)queue->count) % queue->max_pending;
+  queue->items[write_index] = node;
+  if (queue->count == queue->max_pending) {
+    queue->read_index = (queue->read_index + 1) % queue->max_pending;
+  } else {
+    queue->count++;
   }
-
-  light_queue_compact(queue);
-
-  ptrdiff_t pending = arrlen(queue->items) - queue->read_index;
-  if (queue->max_pending > 0 && pending >= queue->max_pending) {
-    /*
-     * Keep accepting the newest light work by dropping the oldest pending node
-     * when at capacity. This avoids a hard stall where all subsequent updates
-     * are silently discarded forever.
-     */
-    if (pending > 0) {
-      queue->read_index++;
-      light_queue_compact(queue);
-      pending = arrlen(queue->items) - queue->read_index;
-    }
-    if (queue->max_pending > 0 && pending >= queue->max_pending) {
-      return false;
-    }
-  }
-
-  arrput(queue->items, node);
-  queue->count = (int)(arrlen(queue->items) - queue->read_index);
-  return true;
 }
 
 bool LightQueue_Pop(LightUpdateQueue *queue, LightNode *out_node) {
-  if (queue == NULL || out_node == NULL) {
+  if (queue->count == 0) {
     return false;
   }
 
-  ptrdiff_t pending = arrlen(queue->items) - queue->read_index;
-  if (pending <= 0) {
-    queue->count = 0;
-    return false;
-  }
-
-  *out_node = queue->items[queue->read_index++];
-  light_queue_compact(queue);
-  queue->count = (int)(arrlen(queue->items) - queue->read_index);
+  *out_node = queue->items[queue->read_index];
+  queue->read_index = (queue->read_index + 1) % queue->max_pending;
+  queue->count--;
   return true;
 }
 
-static LightUpdateQueue *world_queue(struct World *world) {
-  return (LightUpdateQueue *)world->light_queue_ptr;
-}
+static int column_light_at(int light, int y, int top, uint8_t block_id) {
+  if (y >= top) {
+    light = 15;
+  } else {
+    light -= Block_Opacity(block_id);
+    if (light < 0) {
+      light = 0;
+    }
+  }
 
-static int column_sky_source_y(const Chunk *chunk, int lx, int lz) {
-  return Chunk_GetHeight(chunk, lx, lz);
+  if (Block_IsOpaque(block_id)) {
+    light = 0;
+  }
+  return light;
 }
 
 void Lighting_InitializeChunkSkylight(struct World *world, Chunk *chunk) {
-  LightUpdateQueue *queue = world_queue(world);
-
   for (int lx = 0; lx < WORLD_CHUNK_SIZE_X; lx++) {
     for (int lz = 0; lz < WORLD_CHUNK_SIZE_Z; lz++) {
-      int top = column_sky_source_y(chunk, lx, lz);
+      int top = Chunk_GetHeight(chunk, lx, lz);
       int light = 15;
 
       for (int y = WORLD_MAX_HEIGHT - 1; y >= 0; y--) {
-        uint8_t block_id = Chunk_GetBlock(chunk, lx, y, lz);
-
-        if (y >= top) {
-          light = 15;
-        } else {
-          int opacity = Block_Opacity(block_id);
-          if (opacity > 0) {
-            light -= opacity;
-            if (light < 0) {
-              light = 0;
-            }
-          }
-        }
-
-        if (Block_IsOpaque(block_id)) {
-          light = 0;
-        }
-
+        light = column_light_at(light, y, top, Chunk_GetBlock(chunk, lx, y, lz));
         Chunk_SetSkyLight(chunk, lx, y, lz, light);
 
-        if (queue != NULL) {
-          LightNode node = {
-              .x = chunk->cx * WORLD_CHUNK_SIZE_X + lx,
-              .y = y,
-              .z = chunk->cz * WORLD_CHUNK_SIZE_Z + lz,
-          };
-          LightQueue_Push(queue, node);
-        }
+        LightNode node = {
+            .x = chunk->cx * WORLD_CHUNK_SIZE_X + lx,
+            .y = y,
+            .z = chunk->cz * WORLD_CHUNK_SIZE_Z + lz,
+        };
+        LightQueue_Push(world->light_queue, node);
       }
     }
   }
@@ -164,39 +86,15 @@ void Lighting_InitializeChunkSkylight(struct World *world, Chunk *chunk) {
 }
 
 void Lighting_RelightColumn(struct World *world, int x, int z) {
-  LightUpdateQueue *queue = world_queue(world);
   int top = World_GetTopY(world, x, z);
   int light = 15;
 
   for (int y = WORLD_MAX_HEIGHT - 1; y >= 0; y--) {
-    uint8_t block_id = World_GetBlock(world, x, y, z);
-
-    if (y >= top) {
-      light = 15;
-    } else {
-      int opacity = Block_Opacity(block_id);
-      if (opacity > 0) {
-        light -= opacity;
-        if (light < 0) {
-          light = 0;
-        }
-      }
-    }
-
-    if (Block_IsOpaque(block_id)) {
-      light = 0;
-    }
-
+    light = column_light_at(light, y, top, World_GetBlock(world, x, y, z));
     World_SetSkyLight(world, x, y, z, light);
 
-    if (queue != NULL) {
-      LightNode node = {
-          .x = x,
-          .y = y,
-          .z = z,
-      };
-      LightQueue_Push(queue, node);
-    }
+    LightNode node = {.x = x, .y = y, .z = z};
+    LightQueue_Push(world->light_queue, node);
   }
 }
 
@@ -205,8 +103,6 @@ static const int QUEUE_AROUND_OFFSETS[7][3] = {
 };
 
 void Lighting_QueueAround(struct World *world, int x, int y, int z) {
-  LightUpdateQueue *queue = world_queue(world);
-
   for (int i = 0; i < 7; i++) {
     int ny = y + QUEUE_AROUND_OFFSETS[i][1];
     if (ny < 0 || ny >= WORLD_MAX_HEIGHT) {
@@ -218,7 +114,7 @@ void Lighting_QueueAround(struct World *world, int x, int y, int z) {
         .y = ny,
         .z = z + QUEUE_AROUND_OFFSETS[i][2],
     };
-    LightQueue_Push(queue, node);
+    LightQueue_Push(world->light_queue, node);
   }
 }
 
@@ -248,35 +144,23 @@ static int compute_target_skylight(struct World *world, int x, int y, int z) {
     return 0;
   }
 
-  int top = World_GetTopY(world, x, z);
-  int source = (y >= top) ? 15 : 0;
-
-  int max_neighbor = get_max_neighbor_light(world, x, y, z);
+  int source = (y >= World_GetTopY(world, x, z)) ? 15 : 0;
 
   int attenuation = Block_Opacity(block_id);
   if (attenuation <= 0) {
     attenuation = 1;
   }
 
-  int propagated = max_neighbor - attenuation;
+  int propagated = get_max_neighbor_light(world, x, y, z) - attenuation;
   if (propagated < 0) {
     propagated = 0;
   }
 
-  int target = source;
-  if (propagated > target) {
-    target = propagated;
-  }
-
-  return clamp_light(target);
+  return (propagated > source) ? propagated : source;
 }
 
 int Lighting_Process(struct World *world, int budget) {
-  LightUpdateQueue *queue = world_queue(world);
-  if (queue == NULL) {
-    return 0;
-  }
-
+  LightUpdateQueue *queue = world->light_queue;
   int processed = 0;
 
   LightNode node;
@@ -285,8 +169,8 @@ int Lighting_Process(struct World *world, int budget) {
     int target = compute_target_skylight(world, node.x, node.y, node.z);
 
     if (current != target) {
-      int cx = node.x >> 4;
-      int cz = node.z >> 4;
+      int cx = floor_div16(node.x);
+      int cz = floor_div16(node.z);
       Chunk *chunk = World_GetChunk(world, cx, cz);
 
       World_SetSkyLight(world, node.x, node.y, node.z, target);

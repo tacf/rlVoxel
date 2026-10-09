@@ -41,6 +41,14 @@ cmake --build build -j
 
 (May need adjustments to work on windows)
 
+To build and run the world regression tests:
+
+```bash
+cmake -S . -B build -DRLVOXEL_BUILD_TESTS=ON
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
 ## CLI
 
 ```bash

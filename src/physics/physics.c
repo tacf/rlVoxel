@@ -24,13 +24,6 @@ BoundingBox Player_GetBoundsAtPosition(Vector3 position, Vector3 half_size, floa
 }
 
 /**
- * Checks collision using World_CheckAABB (which handles epsilon internally).
- */
-static bool check_aabb_with_epsilon(const World *world, BoundingBox box) {
-  return World_CheckAABB(world, box);
-}
-
-/**
  * Translates a bounding box along a single axis.
  */
 static void translate_bounds_axis(BoundingBox *box, int axis, float delta) {
@@ -73,7 +66,7 @@ static float resolve_step(const World *world, BoundingBox bounds, int axis, floa
     BoundingBox test = bounds;
     translate_bounds_axis(&test, axis, step * t);
 
-    if (check_aabb_with_epsilon(world, test)) {
+    if (World_CheckAABB(world, test)) {
       high = t;
     } else {
       low = t;
@@ -106,7 +99,7 @@ static void move_axis(const World *world, Vector3 *position, float delta, int ax
     BoundingBox candidate = *bounds;
     translate_bounds_axis(&candidate, axis, step);
 
-    if (check_aabb_with_epsilon(world, candidate)) {
+    if (World_CheckAABB(world, candidate)) {
       *collided = true;
 
       float actual_move = resolve_step(world, *bounds, axis, step);

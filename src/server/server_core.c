@@ -21,11 +21,6 @@
 #include "world/chunk.h"
 #include "world/world.h"
 
-typedef struct ServerOutgoingNode {
-  ServerOutgoingMessage message;
-  struct ServerOutgoingNode *next;
-} ServerOutgoingNode;
-
 static double now_seconds(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -42,15 +37,6 @@ static void sleep_millis(int ms) {
   nanosleep(&ts, NULL);
 }
 
-static int floor_div16(int x) {
-  if (x >= 0) {
-    return x >> 4;
-  }
-  return -(((-x) + 15) >> 4);
-}
-
-static int64_t make_chunk_key(int cx, int cz) { return ((int64_t)cx << 32) | (uint32_t)cz; }
-
 #define SERVER_MOVE_MAX_HORIZ_PER_TICK 1.20f
 #define SERVER_MOVE_MAX_VERT_PER_TICK 2.40f
 #define SERVER_MOVE_MAX_TICK_GAP 20u
@@ -59,9 +45,6 @@ static int64_t make_chunk_key(int cx, int cz) { return ((int64_t)cx << 32) | (ui
 #define SERVER_BREAK_RECOVERY_INTERVAL_TICKS 5u
 
 static void server_reset_break_state(ServerCore *server) {
-  if (server == NULL) {
-    return;
-  }
   server->break_state_active = false;
   server->break_block_x = 0;
   server->break_block_y = 0;
@@ -76,7 +59,7 @@ static void server_decay_break_state(ServerCore *server) {
   uint32_t elapsed_recovery_ticks;
   uint32_t recovery_steps;
 
-  if (server == NULL || !server->break_state_active) {
+  if (!server->break_state_active) {
     return;
   }
 
@@ -89,7 +72,8 @@ static void server_decay_break_state(ServerCore *server) {
     server->break_last_recover_tick = recovery_start_tick;
   }
 
-  if (server->tick_counter < server->break_last_recover_tick + SERVER_BREAK_RECOVERY_INTERVAL_TICKS) {
+  if (server->tick_counter <
+      server->break_last_recover_tick + SERVER_BREAK_RECOVERY_INTERVAL_TICKS) {
     return;
   }
 
@@ -141,80 +125,8 @@ static void sent_chunk_remove_at(ServerCore *server, size_t idx) {
 
 static void sent_chunk_clear(ServerCore *server) { server->sent_chunk_count = 0; }
 
-static void server_queue_outgoing(ServerCore *server, const uint8_t *data, size_t size,
-                                  uint8_t channel, NetReliability reliability) {
-  ServerOutgoingNode *node;
-
-  if (server == NULL || data == NULL || size == 0) {
-    return;
-  }
-
-  node = (ServerOutgoingNode *)calloc(1, sizeof(ServerOutgoingNode));
-  if (node == NULL) {
-    return;
-  }
-
-  node->message.data = (uint8_t *)malloc(size);
-  if (node->message.data == NULL) {
-    free(node);
-    return;
-  }
-
-  memcpy(node->message.data, data, size);
-  node->message.size = size;
-  node->message.channel = channel;
-  node->message.reliability = reliability;
-  node->message.client_id = 0;
-
-  pthread_mutex_lock(&server->outgoing_mutex);
-  if (server->outgoing_tail == NULL) {
-    server->outgoing_head = node;
-    server->outgoing_tail = node;
-  } else {
-    server->outgoing_tail->next = node;
-    server->outgoing_tail = node;
-  }
-  pthread_mutex_unlock(&server->outgoing_mutex);
-
-  if (server->net != NULL) {
-    Net_SendPacket(server->net, data, size, channel, reliability, 0);
-  }
-}
-
-bool ServerCore_PollOutgoing(ServerCore *server, ServerOutgoingMessage *out_message) {
-  ServerOutgoingNode *node;
-
-  if (server == NULL || out_message == NULL) {
-    return false;
-  }
-
-  memset(out_message, 0, sizeof(*out_message));
-
-  pthread_mutex_lock(&server->outgoing_mutex);
-  node = server->outgoing_head;
-  if (node != NULL) {
-    server->outgoing_head = node->next;
-    if (server->outgoing_head == NULL) {
-      server->outgoing_tail = NULL;
-    }
-  }
-  pthread_mutex_unlock(&server->outgoing_mutex);
-
-  if (node == NULL) {
-    return false;
-  }
-
-  *out_message = node->message;
-  free(node);
-  return true;
-}
-
-void ServerCore_FreeOutgoing(ServerOutgoingMessage *message) {
-  if (message == NULL) {
-    return;
-  }
-  free(message->data);
-  memset(message, 0, sizeof(*message));
+static void server_send(ServerCore *server, const uint8_t *data, size_t size, uint8_t channel) {
+  Net_SendPacket(server->net, data, size, channel, NET_RELIABLE, 0);
 }
 
 static void server_send_welcome(ServerCore *server) {
@@ -231,27 +143,22 @@ static void server_send_welcome(ServerCore *server) {
     return;
   }
 
-  server_queue_outgoing(server, buffer, size, 0, NET_RELIABLE);
+  server_send(server, buffer, size, 0);
 }
 
 static void server_send_disconnect(ServerCore *server, const char *reason) {
-  NetDisconnect disconnect_msg;
+  NetDisconnect disconnect_msg = {0};
   uint8_t buffer[256];
   size_t size = 0;
 
-  memset(&disconnect_msg, 0, sizeof(disconnect_msg));
-  if (reason != NULL) {
-    strncpy(disconnect_msg.reason, reason, RVNET_MAX_DISCONNECT_REASON - 1);
-  } else {
-    strncpy(disconnect_msg.reason, "Disconnected", RVNET_MAX_DISCONNECT_REASON - 1);
-  }
+  strncpy(disconnect_msg.reason, reason, RVNET_MAX_DISCONNECT_REASON - 1);
 
   if (!Protocol_EncodeDisconnect(server->next_sequence++, server->tick_counter, &disconnect_msg,
                                  buffer, sizeof(buffer), &size)) {
     return;
   }
 
-  server_queue_outgoing(server, buffer, size, 0, NET_RELIABLE);
+  server_send(server, buffer, size, 0);
 }
 
 static void server_send_player_state(ServerCore *server) {
@@ -277,7 +184,7 @@ static void server_send_player_state(ServerCore *server) {
     return;
   }
 
-  server_queue_outgoing(server, buffer, size, 1, NET_RELIABLE);
+  server_send(server, buffer, size, 1);
 }
 
 static void server_send_chunk_unload(ServerCore *server, int cx, int cz) {
@@ -290,7 +197,7 @@ static void server_send_chunk_unload(ServerCore *server, int cx, int cz) {
     return;
   }
 
-  server_queue_outgoing(server, buffer, size, 0, NET_RELIABLE);
+  server_send(server, buffer, size, 0);
 }
 
 static void server_send_block_delta(ServerCore *server, int x, int y, int z) {
@@ -309,7 +216,7 @@ static void server_send_block_delta(ServerCore *server, int x, int y, int z) {
     return;
   }
 
-  server_queue_outgoing(server, buffer, size, 0, NET_RELIABLE);
+  server_send(server, buffer, size, 0);
 }
 
 static void server_send_chunk_data(ServerCore *server, const Chunk *chunk) {
@@ -318,10 +225,6 @@ static void server_send_chunk_data(ServerCore *server, const Chunk *chunk) {
                         (WORLD_CHUNK_SIZE_X * WORLD_CHUNK_SIZE_Z);
   uint8_t *buffer;
   size_t size = 0;
-
-  if (chunk == NULL) {
-    return;
-  }
 
   data.cx = chunk->cx;
   data.cz = chunk->cz;
@@ -340,7 +243,7 @@ static void server_send_chunk_data(ServerCore *server, const Chunk *chunk) {
     return;
   }
 
-  server_queue_outgoing(server, buffer, size, 0, NET_RELIABLE);
+  server_send(server, buffer, size, 0);
   free(buffer);
 }
 
@@ -348,10 +251,6 @@ static void server_apply_interactions(ServerCore *server, const GameplayInputCmd
   Vector3 eye;
   Vector3 dir;
   VoxelRaycastHit hit;
-
-  if (server == NULL || input == NULL) {
-    return;
-  }
 
   eye = Player_GetEyePosition(&server->player);
   dir = Player_GetLookDirection(&server->player);
@@ -431,10 +330,6 @@ static void server_apply_interactions(ServerCore *server, const GameplayInputCmd
 }
 
 static bool server_is_finite_move(const NetPlayerMove *move) {
-  if (move == NULL) {
-    return false;
-  }
-
   return isfinite(move->position_x) && isfinite(move->position_y) && isfinite(move->position_z) &&
          isfinite(move->velocity_x) && isfinite(move->velocity_y) && isfinite(move->velocity_z) &&
          isfinite(move->yaw) && isfinite(move->pitch);
@@ -451,7 +346,7 @@ static bool server_apply_client_move(ServerCore *server, const NetPlayerMove *mo
   uint32_t tick_gap = 1u;
   BoundingBox target_bounds;
 
-  if (server == NULL || move == NULL || !server_is_finite_move(move)) {
+  if (!server_is_finite_move(move)) {
     return false;
   }
 
@@ -503,7 +398,7 @@ static void server_stream_visible_chunks(ServerCore *server) {
   int player_cx, player_cz;
   int rd;
 
-  if (server == NULL || !server->client_ready) {
+  if (!server->client_ready) {
     return;
   }
 
@@ -588,10 +483,6 @@ static void server_consume_latest_input(ServerCore *server, GameplayInputCmd *ou
 static bool server_consume_latest_move(ServerCore *server, NetPlayerMove *out_move) {
   bool accepted_pending = false;
 
-  if (server == NULL || out_move == NULL) {
-    return false;
-  }
-
   pthread_mutex_lock(&server->input_mutex);
   if (server->pending_move_available) {
     if (server->pending_move.tick_id > server->current_move.tick_id) {
@@ -605,12 +496,7 @@ static bool server_consume_latest_move(ServerCore *server, NetPlayerMove *out_mo
   return accepted_pending;
 }
 
-void ServerCore_SubmitInput(ServerCore *server, int client_id, const GameplayInputCmd *input) {
-  (void)client_id;
-  if (server == NULL || input == NULL) {
-    return;
-  }
-
+static void server_submit_input(ServerCore *server, const GameplayInputCmd *input) {
   pthread_mutex_lock(&server->input_mutex);
   if (!server->pending_input_available || input->tick_id >= server->pending_input.tick_id) {
     server->pending_input = *input;
@@ -620,10 +506,6 @@ void ServerCore_SubmitInput(ServerCore *server, int client_id, const GameplayInp
 }
 
 static void server_submit_move(ServerCore *server, const NetPlayerMove *move) {
-  if (server == NULL || move == NULL) {
-    return;
-  }
-
   pthread_mutex_lock(&server->input_mutex);
   if (!server->pending_move_available || move->tick_id >= server->pending_move.tick_id) {
     server->pending_move = *move;
@@ -632,10 +514,24 @@ static void server_submit_move(ServerCore *server, const NetPlayerMove *move) {
   pthread_mutex_unlock(&server->input_mutex);
 }
 
+static void server_reset_client_state(ServerCore *server) {
+  sent_chunk_clear(server);
+  memset(&server->current_input, 0, sizeof(server->current_input));
+  server->pending_input_available = false;
+  memset(&server->current_move, 0, sizeof(server->current_move));
+  server->pending_move_available = false;
+  server->last_applied_input_tick = 0;
+  server->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
+  server->fly_enabled = false;
+  server->player.gameplay_mode = server->gameplay_mode;
+  server->player.fly_enabled = server->fly_enabled;
+  server_reset_break_state(server);
+}
+
 static void server_process_incoming(ServerCore *server) {
   NetEvent event;
 
-  if (server == NULL || server->net == NULL) {
+  if (server->net == NULL) {
     return;
   }
 
@@ -647,17 +543,7 @@ static void server_process_incoming(ServerCore *server) {
     } else if (event.type == NET_EVENT_DISCONNECTED) {
       server->has_client = false;
       server->client_ready = false;
-      sent_chunk_clear(server);
-      memset(&server->current_input, 0, sizeof(server->current_input));
-      server->pending_input_available = false;
-      memset(&server->current_move, 0, sizeof(server->current_move));
-      server->pending_move_available = false;
-      server->last_applied_input_tick = 0;
-      server->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
-      server->fly_enabled = false;
-      server->player.gameplay_mode = server->gameplay_mode;
-      server->player.fly_enabled = server->fly_enabled;
-      server_reset_break_state(server);
+      server_reset_client_state(server);
     } else if (event.type == NET_EVENT_MESSAGE) {
       if (event.message_type == NET_MSG_C2S_HELLO) {
         server->has_client = true;
@@ -667,19 +553,11 @@ static void server_process_incoming(ServerCore *server) {
             server->client_render_distance > (uint32_t)server->config.render_distance) {
           server->client_render_distance = (uint32_t)server->config.render_distance;
         }
-        sent_chunk_clear(server);
-        memset(&server->current_input, 0, sizeof(server->current_input));
-        server->pending_input_available = false;
-        server->last_applied_input_tick = 0;
-        memset(&server->current_move, 0, sizeof(server->current_move));
-        server->pending_move_available = false;
-        server->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
-        server->fly_enabled = false;
-        server_reset_break_state(server);
+        server_reset_client_state(server);
         server_send_welcome(server);
         server_send_player_state(server);
       } else if (event.message_type == NET_MSG_C2S_INPUT_CMD && server->client_ready) {
-        ServerCore_SubmitInput(server, 0, &event.payload.input_cmd);
+        server_submit_input(server, &event.payload.input_cmd);
       } else if (event.message_type == NET_MSG_C2S_PLAYER_MOVE && server->client_ready) {
         server_submit_move(server, &event.payload.player_move);
       }
@@ -693,7 +571,7 @@ void ServerCore_Tick(ServerCore *server) {
   bool has_new_move = false;
   bool should_send_player_state = false;
 
-  if (server == NULL || !ServerCore_IsRunning(server)) {
+  if (!ServerCore_IsRunning(server)) {
     return;
   }
 
@@ -753,7 +631,7 @@ static void *server_thread_main(void *arg) {
 }
 
 bool ServerCore_StartThread(ServerCore *server) {
-  if (server == NULL || server->thread_started) {
+  if (server->thread_started) {
     return false;
   }
 
@@ -766,10 +644,6 @@ bool ServerCore_StartThread(ServerCore *server) {
 }
 
 void ServerCore_Stop(ServerCore *server) {
-  if (server == NULL) {
-    return;
-  }
-
   atomic_store(&server->running, false);
   if (server->thread_started) {
     pthread_join(server->thread, NULL);
@@ -777,52 +651,22 @@ void ServerCore_Stop(ServerCore *server) {
   }
 }
 
-bool ServerCore_IsRunning(ServerCore *server) {
-  if (server == NULL) {
-    return false;
-  }
-  return atomic_load(&server->running);
-}
-
-static void server_outgoing_clear(ServerCore *server) {
-  ServerOutgoingMessage msg;
-  while (ServerCore_PollOutgoing(server, &msg)) {
-    ServerCore_FreeOutgoing(&msg);
-  }
-}
+bool ServerCore_IsRunning(ServerCore *server) { return atomic_load(&server->running); }
 
 bool ServerCore_Init(ServerCore *server, const ServerConfig *config, NetEndpoint *net,
                      bool take_net_ownership) {
   int spawn_y;
   Vector3 spawn;
 
-  if (server == NULL || config == NULL) {
-    return false;
-  }
-
   memset(server, 0, sizeof(*server));
   server->config = *config;
   if (server->config.tick_rate <= 0) {
     server->config.tick_rate = (int)GAME_TICK_RATE;
   }
-  if (server->config.max_clients <= 0) {
-    server->config.max_clients = 1;
-  }
-  if (server->config.max_clients > 1) {
-    server->config.max_clients = 1;
-  }
-  if (server->config.render_distance < 2) {
-    server->config.render_distance = 2;
-  }
-  if (server->config.render_distance > 12) {
-    server->config.render_distance = 12;
-  }
+  server->config.max_clients = 1;
+  server->config.render_distance = Clamp(server->config.render_distance, 2, 12);
 
   if (pthread_mutex_init(&server->input_mutex, NULL) != 0) {
-    return false;
-  }
-  if (pthread_mutex_init(&server->outgoing_mutex, NULL) != 0) {
-    pthread_mutex_destroy(&server->input_mutex);
     return false;
   }
 
@@ -838,26 +682,17 @@ bool ServerCore_Init(ServerCore *server, const ServerConfig *config, NetEndpoint
   spawn_y = World_GetTopY(&server->world, 0, 0);
   spawn = (Vector3){0.5f, (float)spawn_y + 2.0f, 0.5f};
   Player_Init(&server->player, spawn);
-  server->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
-  server->fly_enabled = false;
-  server->player.gameplay_mode = server->gameplay_mode;
-  server->player.fly_enabled = server->fly_enabled;
-  server_reset_break_state(server);
+  server_reset_client_state(server);
 
   return true;
 }
 
 void ServerCore_Shutdown(ServerCore *server) {
-  if (server == NULL) {
-    return;
-  }
-
   if (ServerCore_IsRunning(server) || server->thread_started) {
     ServerCore_Stop(server);
   }
 
   server_send_disconnect(server, "Server shutting down");
-  server_outgoing_clear(server);
 
   if (server->net != NULL && server->owns_net) {
     Net_Close(server->net);
@@ -876,26 +711,4 @@ void ServerCore_Shutdown(ServerCore *server) {
   server->sent_chunk_capacity = 0;
 
   pthread_mutex_destroy(&server->input_mutex);
-  pthread_mutex_destroy(&server->outgoing_mutex);
-}
-
-AuthoritativePlayerState ServerCore_GetAuthoritativePlayerState(ServerCore *server) {
-  AuthoritativePlayerState state = {0};
-  if (server == NULL) {
-    return state;
-  }
-
-  state.tick_id = server->tick_counter;
-  state.input_tick_id = server->last_applied_input_tick;
-  state.position_x = server->player.position.x;
-  state.position_y = server->player.position.y;
-  state.position_z = server->player.position.z;
-  state.velocity_x = server->player.velocity.x;
-  state.velocity_y = server->player.velocity.y;
-  state.velocity_z = server->player.velocity.z;
-  state.yaw = server->player.yaw;
-  state.pitch = server->player.pitch;
-  state.on_ground = server->player.on_ground ? 1u : 0u;
-  state.world_time = server->world.world_time;
-  return state;
 }

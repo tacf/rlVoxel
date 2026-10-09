@@ -52,7 +52,6 @@ typedef struct NetProfilerInputTrack {
 } NetProfilerInputTrack;
 
 typedef struct NetProfilerState {
-  bool initialized;
   double start_time_seconds;
 
   uint64_t total_tx_packets;
@@ -161,27 +160,16 @@ static void net_profiler_confirm_input(uint32_t confirmed_input_tick, double now
 
 void NetProfiler_Init(void) {
   memset(&g_net_profiler, 0, sizeof(g_net_profiler));
-  g_net_profiler.initialized = true;
   g_net_profiler.start_time_seconds = GetTime();
   g_net_profiler.packet_view_follow_top = true;
 }
 
 void NetProfiler_Shutdown(void) { memset(&g_net_profiler, 0, sizeof(g_net_profiler)); }
 
-void NetProfiler_Reset(void) {
-  bool was_initialized = g_net_profiler.initialized;
-  NetProfiler_Init();
-  g_net_profiler.initialized = was_initialized;
-}
-
 void NetProfiler_RecordSend(NetMessageType message_type, uint32_t sequence, uint32_t tick,
                             size_t packet_size, uint8_t channel, uint32_t confirm_ref) {
   NetProfilerMessageStats *stats;
   double now_seconds;
-
-  if (!g_net_profiler.initialized) {
-    NetProfiler_Init();
-  }
 
   now_seconds = GetTime();
   stats = net_profiler_stats_for(message_type);
@@ -210,10 +198,6 @@ void NetProfiler_RecordReceive(NetMessageType message_type, uint32_t sequence, u
                                size_t packet_size, uint8_t channel, uint32_t confirm_ref) {
   NetProfilerMessageStats *stats;
   double now_seconds;
-
-  if (!g_net_profiler.initialized) {
-    NetProfiler_Init();
-  }
 
   now_seconds = GetTime();
   stats = net_profiler_stats_for(message_type);
@@ -246,12 +230,8 @@ void NetProfiler_DrawWindow(void) {
     return;
   }
 
-  if (!g_net_profiler.initialized) {
-    NetProfiler_Init();
-  }
-
   if (igButton("Reset Counters", (ImVec2){0.0f, 0.0f})) {
-    NetProfiler_Reset();
+    NetProfiler_Init();
   }
 
   now_seconds = GetTime();

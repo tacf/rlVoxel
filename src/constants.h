@@ -31,6 +31,11 @@
 /** Maximum distance for block interaction */
 #define PLAYER_REACH_DISTANCE 6.0f
 
+/** Pitch is clamped to ~89 degrees to prevent gimbal lock */
+#define PLAYER_PITCH_LIMIT 1.55f
+/** Radians of rotation per pixel of mouse movement */
+#define PLAYER_MOUSE_SENSITIVITY 0.0023f
+
 /** Sprint acceleration multiplier for tick-based movement */
 #define PLAYER_SPRINT_ACCEL_MULTIPLIER 1.5f
 

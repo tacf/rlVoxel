@@ -36,15 +36,6 @@ typedef void (*GLGetIntegervFunc)(unsigned int, int *);
 static Telemetry g_telemetry = {0};
 
 static void copy_text(char *dst, size_t dst_size, const char *src) {
-  if (dst == NULL || dst_size == 0) {
-    return;
-  }
-
-  if (src == NULL) {
-    dst[0] = '\0';
-    return;
-  }
-
   strncpy(dst, src, dst_size - 1);
   dst[dst_size - 1] = '\0';
 }
@@ -54,7 +45,7 @@ static void collect_cpu_info(SystemInfo *info) {
   SYSTEM_INFO sysinfo;
   GetSystemInfo(&sysinfo);
   info->cpu_cores = sysinfo.dwNumberOfProcessors;
-  copy_text(info->cpu_name, sizeof(info->cpu_name), TextFormat("Windows CPU"));
+  copy_text(info->cpu_name, sizeof(info->cpu_name), "Windows CPU");
 #elif defined(__linux__)
   info->cpu_cores = (int)sysconf(_SC_NPROCESSORS_ONLN);
   FILE *cpuinfo = fopen("/proc/cpuinfo", "r");
@@ -69,7 +60,7 @@ static void collect_cpu_info(SystemInfo *info) {
           if (len > 0 && colon[len - 1] == '\n') {
             colon[len - 1] = '\0';
           }
-          copy_text(info->cpu_name, sizeof(info->cpu_name), TextFormat("%s", colon));
+          copy_text(info->cpu_name, sizeof(info->cpu_name), colon);
           break;
         }
       }
@@ -77,7 +68,7 @@ static void collect_cpu_info(SystemInfo *info) {
     fclose(cpuinfo);
   }
   if (info->cpu_name[0] == '\0') {
-    copy_text(info->cpu_name, sizeof(info->cpu_name), TextFormat("Linux CPU"));
+    copy_text(info->cpu_name, sizeof(info->cpu_name), "Linux CPU");
   }
 #elif defined(__APPLE__)
   size_t len = sizeof(info->cpu_cores);
@@ -86,12 +77,12 @@ static void collect_cpu_info(SystemInfo *info) {
   char brand[128];
   len = sizeof(brand);
   if (sysctlbyname("machdep.cpu.brand_string", brand, &len, NULL, 0) == 0) {
-    copy_text(info->cpu_name, sizeof(info->cpu_name), TextFormat("%s", brand));
+    copy_text(info->cpu_name, sizeof(info->cpu_name), brand);
   } else {
-    copy_text(info->cpu_name, sizeof(info->cpu_name), TextFormat("Apple CPU"));
+    copy_text(info->cpu_name, sizeof(info->cpu_name), "Apple CPU");
   }
 #else
-  copy_text(info->cpu_name, sizeof(info->cpu_name), TextFormat("Unknown CPU"));
+  copy_text(info->cpu_name, sizeof(info->cpu_name), "Unknown CPU");
   info->cpu_cores = 1;
 #endif
 }
@@ -100,43 +91,25 @@ static void collect_gpu_info(SystemInfo *info) {
   GLGetStringFunc glGetStringPtr = (GLGetStringFunc)rlGetProcAddress("glGetString");
   GLGetIntegervFunc glGetIntegervPtr = (GLGetIntegervFunc)rlGetProcAddress("glGetIntegerv");
 
+  const char *vendor = NULL;
+  const char *renderer = NULL;
+  const char *version = NULL;
+  const char *glsl = NULL;
   if (glGetStringPtr) {
-    const char *vendor = glGetStringPtr(GL_VENDOR);
-    const char *renderer = glGetStringPtr(GL_RENDERER);
-    const char *version = glGetStringPtr(GL_VERSION);
-    const char *glsl = glGetStringPtr(GL_SHADING_LANGUAGE_VERSION);
-
-    if (vendor && renderer) {
-      copy_text(info->gpu_name, sizeof(info->gpu_name), TextFormat("%s %s", vendor, renderer));
-    } else if (renderer) {
-      copy_text(info->gpu_name, sizeof(info->gpu_name), TextFormat("%s", renderer));
-    } else {
-      copy_text(info->gpu_name, sizeof(info->gpu_name), TextFormat("Unknown GPU"));
-    }
-
-    if (renderer) {
-      copy_text(info->gpu_renderer, sizeof(info->gpu_renderer), TextFormat("%s", renderer));
-    } else {
-      copy_text(info->gpu_renderer, sizeof(info->gpu_renderer), TextFormat("Unknown"));
-    }
-
-    if (version) {
-      copy_text(info->opengl_version, sizeof(info->opengl_version), TextFormat("%s", version));
-    } else {
-      copy_text(info->opengl_version, sizeof(info->opengl_version), TextFormat("Unknown"));
-    }
-
-    if (glsl) {
-      copy_text(info->glsl_version, sizeof(info->glsl_version), TextFormat("%s", glsl));
-    } else {
-      copy_text(info->glsl_version, sizeof(info->glsl_version), TextFormat("Unknown"));
-    }
-  } else {
-    copy_text(info->gpu_name, sizeof(info->gpu_name), TextFormat("Unknown GPU"));
-    copy_text(info->gpu_renderer, sizeof(info->gpu_renderer), TextFormat("Unknown"));
-    copy_text(info->opengl_version, sizeof(info->opengl_version), TextFormat("Unknown"));
-    copy_text(info->glsl_version, sizeof(info->glsl_version), TextFormat("Unknown"));
+    vendor = (const char *)glGetStringPtr(GL_VENDOR);
+    renderer = (const char *)glGetStringPtr(GL_RENDERER);
+    version = (const char *)glGetStringPtr(GL_VERSION);
+    glsl = (const char *)glGetStringPtr(GL_SHADING_LANGUAGE_VERSION);
   }
+
+  if (vendor && renderer) {
+    copy_text(info->gpu_name, sizeof(info->gpu_name), TextFormat("%s %s", vendor, renderer));
+  } else {
+    copy_text(info->gpu_name, sizeof(info->gpu_name), renderer ? renderer : "Unknown GPU");
+  }
+  copy_text(info->gpu_renderer, sizeof(info->gpu_renderer), renderer ? renderer : "Unknown");
+  copy_text(info->opengl_version, sizeof(info->opengl_version), version ? version : "Unknown");
+  copy_text(info->glsl_version, sizeof(info->glsl_version), glsl ? glsl : "Unknown");
 
   info->gpu_memory_mb = -1;
   if (glGetIntegervPtr) {
@@ -156,7 +129,7 @@ static void collect_gpu_info(SystemInfo *info) {
 
 static void collect_os_info(SystemInfo *info) {
 #if defined(_WIN32)
-  copy_text(info->os_description, sizeof(info->os_description), TextFormat("Windows"));
+  copy_text(info->os_description, sizeof(info->os_description), "Windows");
 #elif defined(__linux__)
   FILE *os_release = fopen("/etc/os-release", "r");
   if (os_release) {
@@ -169,7 +142,7 @@ static void collect_os_info(SystemInfo *info) {
           char *end = strchr(start, '"');
           if (end) {
             *end = '\0';
-            copy_text(info->os_description, sizeof(info->os_description), TextFormat("%s", start));
+            copy_text(info->os_description, sizeof(info->os_description), start);
             fclose(os_release);
             return;
           }
@@ -178,17 +151,17 @@ static void collect_os_info(SystemInfo *info) {
     }
     fclose(os_release);
   }
-  copy_text(info->os_description, sizeof(info->os_description), TextFormat("Linux"));
+  copy_text(info->os_description, sizeof(info->os_description), "Linux");
 #elif defined(__APPLE__)
   struct utsname uts;
   if (uname(&uts) == 0) {
     copy_text(info->os_description, sizeof(info->os_description),
               TextFormat("macOS %s", uts.release));
   } else {
-    copy_text(info->os_description, sizeof(info->os_description), TextFormat("macOS"));
+    copy_text(info->os_description, sizeof(info->os_description), "macOS");
   }
 #else
-  copy_text(info->os_description, sizeof(info->os_description), TextFormat("Unknown OS"));
+  copy_text(info->os_description, sizeof(info->os_description), "Unknown OS");
 #endif
 }
 
@@ -307,5 +280,3 @@ void Telemetry_DrawWindow(void) {
 
   igEnd();
 }
-
-const Telemetry *Telemetry_Get(void) { return &g_telemetry; }

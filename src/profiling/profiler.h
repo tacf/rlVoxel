@@ -57,14 +57,8 @@ void Profiler_CaptureFrame(void);
 void Profiler_BeginSection(const char *name);
 void Profiler_EndSection(void);
 
-void Profiler_PushGroup(const char *name);
-void Profiler_PopGroup(void);
-
 void Profiler_SetEnabled(bool enabled);
-bool Profiler_IsEnabled(void);
 
 const Profiler *Profiler_Get(void);
-int Profiler_GetSectionCount(void);
-const ProfilerSection *Profiler_GetSection(int index);
 
 #endif

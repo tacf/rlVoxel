@@ -52,18 +52,10 @@ static int chunk_world_x_min(const Chunk *chunk) { return chunk->cx * WORLD_CHUN
 static int chunk_world_z_min(const Chunk *chunk) { return chunk->cz * WORLD_CHUNK_SIZE_Z; }
 
 static bool chunk_world_to_local(const Chunk *chunk, int wx, int wz, int *out_lx, int *out_lz) {
-  int lx = wx - chunk_world_x_min(chunk);
-  int lz = wz - chunk_world_z_min(chunk);
-  if (lx < 0 || lx >= WORLD_CHUNK_SIZE_X || lz < 0 || lz >= WORLD_CHUNK_SIZE_Z) {
-    return false;
-  }
-  if (out_lx != NULL) {
-    *out_lx = lx;
-  }
-  if (out_lz != NULL) {
-    *out_lz = lz;
-  }
-  return true;
+  *out_lx = wx - chunk_world_x_min(chunk);
+  *out_lz = wz - chunk_world_z_min(chunk);
+  return *out_lx >= 0 && *out_lx < WORLD_CHUNK_SIZE_X && *out_lz >= 0 &&
+         *out_lz < WORLD_CHUNK_SIZE_Z;
 }
 
 static uint8_t chunk_get_block_world(const Chunk *chunk, int wx, int y, int wz) {
@@ -94,15 +86,6 @@ static void chunk_set_block_world(Chunk *chunk, int wx, int y, int wz, uint8_t b
   Chunk_SetBlock(chunk, lx, y, lz, block_id);
 }
 
-static int chunk_get_top_y_world(const Chunk *chunk, int wx, int wz) {
-  int lx;
-  int lz;
-  if (!chunk_world_to_local(chunk, wx, wz, &lx, &lz)) {
-    return 0;
-  }
-  return Chunk_GetHeight(chunk, lx, lz);
-}
-
 static bool can_grow_tall_grass(const Chunk *chunk, int wx, int y, int wz) {
   if (y <= 0 || y >= WORLD_MAX_HEIGHT) {
     return false;
@@ -128,20 +111,10 @@ static void set_tree_leaf(Chunk *chunk, int wx, int y, int wz) {
 }
 
 static void set_tree_log(Chunk *chunk, int wx, int y, int wz) {
-  uint8_t existing = chunk_get_block_world(chunk, wx, y, wz);
-  if (existing == BLOCK_AIR || existing == BLOCK_LEAVES) {
+  if (is_tree_replaceable(chunk_get_block_world(chunk, wx, y, wz))) {
     chunk_set_block_world(chunk, wx, y, wz, BLOCK_LOG);
   }
 }
-
-typedef struct {
-  int min_height;
-  int max_height;
-  int trunk_no_leaves;
-  int max_leaf_radius;
-  int canopy_layers;
-  int leaf_spread_y;
-} TreeConfig;
 
 static bool check_tree_placement(Chunk *chunk, int x, int y, int z, int tree_height,
                                  int check_radius) {
@@ -333,12 +306,8 @@ static void normalize_biome_inputs(double raw_temperature, double raw_downfall,
 
   normalized_temperature = 1.0 - (1.0 - normalized_temperature) * (1.0 - normalized_temperature);
 
-  if (temperature != NULL) {
-    *temperature = clamp_unit(normalized_temperature);
-  }
-  if (downfall != NULL) {
-    *downfall = clamp_unit(normalized_downfall);
-  }
+  *temperature = clamp_unit(normalized_temperature);
+  *downfall = clamp_unit(normalized_downfall);
 }
 
 static void sample_biomes(WorldGen *gen, int x, int z, int width, int depth, BiomeType *biomes,
@@ -383,31 +352,15 @@ static BiomeType sample_biome_at(WorldGen *gen, int x, int z) {
   return biome;
 }
 
-static bool generate_oak_tree(Chunk *chunk, Random *random, int x, int y, int z) {
-  int tree_height = Random_NextIntBounded(random, 3) + 4;
-  if (!check_tree_placement(chunk, x, y, z, tree_height, 1)) {
-    return false;
-  }
-
-  uint8_t soil = chunk_get_block_world(chunk, x, y - 1, z);
-  if (!(soil == BLOCK_GRASS || soil == BLOCK_DIRT) || y >= WORLD_MAX_HEIGHT - tree_height - 1) {
-    return false;
-  }
-
-  chunk_set_block_world(chunk, x, y - 1, z, BLOCK_DIRT);
-  build_tree_trunk(chunk, x, y, z, tree_height);
-  build_oak_like_leaves(chunk, random, x, y, z, tree_height);
-  return true;
+static bool can_plant_tree(const Chunk *chunk, int x, int y, int z, int tree_height) {
+  uint8_t ground = chunk_get_block_world(chunk, x, y - 1, z);
+  return (ground == BLOCK_GRASS || ground == BLOCK_DIRT) && y < WORLD_MAX_HEIGHT - tree_height - 1;
 }
 
-static bool generate_birch_tree(Chunk *chunk, Random *random, int x, int y, int z) {
-  int tree_height = Random_NextIntBounded(random, 3) + 5;
-  if (!check_tree_placement(chunk, x, y, z, tree_height, 1)) {
-    return false;
-  }
-
-  uint8_t soil = chunk_get_block_world(chunk, x, y - 1, z);
-  if (!(soil == BLOCK_GRASS || soil == BLOCK_DIRT) || y >= WORLD_MAX_HEIGHT - tree_height - 1) {
+static bool generate_oak_tree(Chunk *chunk, Random *random, int x, int y, int z, int min_height) {
+  int tree_height = Random_NextIntBounded(random, 3) + min_height;
+  if (!check_tree_placement(chunk, x, y, z, tree_height, 1) ||
+      !can_plant_tree(chunk, x, y, z, tree_height)) {
     return false;
   }
 
@@ -422,13 +375,8 @@ static bool generate_spruce_tree(Chunk *chunk, Random *random, int x, int y, int
   int top_trunk_no_leaves = 1 + Random_NextIntBounded(random, 2);
   int max_leaf_radius = 2 + Random_NextIntBounded(random, 2);
 
-  if (!check_tree_placement(chunk, x, y, z, total_height, max_leaf_radius)) {
-    return false;
-  }
-
-  uint8_t ground = chunk_get_block_world(chunk, x, y - 1, z);
-  if (!((ground == BLOCK_GRASS || ground == BLOCK_DIRT) &&
-        y < WORLD_MAX_HEIGHT - total_height - 1)) {
+  if (!check_tree_placement(chunk, x, y, z, total_height, max_leaf_radius) ||
+      !can_plant_tree(chunk, x, y, z, total_height)) {
     return false;
   }
 
@@ -446,13 +394,8 @@ static bool generate_pine_tree(Chunk *chunk, Random *random, int x, int y, int z
   int canopy_height = tree_height - trunk_no_leaves;
   int max_leaf_radius = 1 + Random_NextIntBounded(random, canopy_height + 1);
 
-  if (!check_tree_placement(chunk, x, y, z, tree_height, max_leaf_radius)) {
-    return false;
-  }
-
-  uint8_t ground = chunk_get_block_world(chunk, x, y - 1, z);
-  if (!((ground == BLOCK_GRASS || ground == BLOCK_DIRT) &&
-        y < WORLD_MAX_HEIGHT - tree_height - 1)) {
+  if (!check_tree_placement(chunk, x, y, z, tree_height, max_leaf_radius) ||
+      !can_plant_tree(chunk, x, y, z, tree_height)) {
     return false;
   }
 
@@ -464,12 +407,8 @@ static bool generate_pine_tree(Chunk *chunk, Random *random, int x, int y, int z
 
 static bool generate_large_oak_tree(Chunk *chunk, Random *random, int x, int y, int z) {
   int tree_height = 5 + Random_NextIntBounded(random, 12);
-  if (!check_tree_placement(chunk, x, y, z, tree_height, 3)) {
-    return false;
-  }
-
-  uint8_t soil = chunk_get_block_world(chunk, x, y - 1, z);
-  if (!(soil == BLOCK_GRASS || soil == BLOCK_DIRT) || y >= WORLD_MAX_HEIGHT - tree_height - 1) {
+  if (!check_tree_placement(chunk, x, y, z, tree_height, 3) ||
+      !can_plant_tree(chunk, x, y, z, tree_height)) {
     return false;
   }
 
@@ -501,7 +440,7 @@ static TreeType choose_tree_type(BiomeType biome, Random *random) {
 static bool generate_tree(TreeType type, Chunk *chunk, Random *random, int x, int y, int z) {
   switch (type) {
   case TREE_BIRCH:
-    return generate_birch_tree(chunk, random, x, y, z);
+    return generate_oak_tree(chunk, random, x, y, z, 5);
   case TREE_SPRUCE:
     return generate_spruce_tree(chunk, random, x, y, z);
   case TREE_PINE:
@@ -510,7 +449,7 @@ static bool generate_tree(TreeType type, Chunk *chunk, Random *random, int x, in
     return generate_large_oak_tree(chunk, random, x, y, z);
   case TREE_OAK:
   default:
-    return generate_oak_tree(chunk, random, x, y, z);
+    return generate_oak_tree(chunk, random, x, y, z, 4);
   }
 }
 
@@ -751,9 +690,7 @@ static double *generate_height_map(WorldGen *gen, double *height_map, int x, int
 }
 
 static void build_terrain(WorldGen *gen, int chunk_x, int chunk_z, uint8_t *blocks,
-                          const BiomeType *biomes, const double *temperatures) {
-  (void)biomes;
-
+                          const double *temperatures) {
   const int horiz_scale = 4;
   const int x_max = horiz_scale + 1;
   const int y_max = 17;
@@ -1006,7 +943,7 @@ void WorldGen_GenerateChunk(WorldGen *gen, Chunk *chunk) {
   memset(chunk->blocks, 0, WORLD_CHUNK_VOLUME * sizeof(uint8_t));
   memset(chunk->skylight, 0, WORLD_CHUNK_LIGHT_BYTES * sizeof(uint8_t));
 
-  build_terrain(gen, chunk_x, chunk_z, chunk->blocks, biomes, temperatures);
+  build_terrain(gen, chunk_x, chunk_z, chunk->blocks, temperatures);
   build_surfaces(gen, chunk_x, chunk_z, chunk->blocks, biomes);
   decorate_features(gen, chunk);
 

@@ -118,8 +118,6 @@ void ProfilerRenderer_DrawFrameGraph(void) {
   igEnd();
 }
 
-void ProfilerRenderer_DrawConfigWindow(void) {}
-
 static bool HasChildren(int section_index, const Profiler *profiler) {
   for (int i = 0; i < profiler->section_count; i++) {
     if (profiler->sections[i].parent_index == section_index) {

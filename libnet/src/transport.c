@@ -1,7 +1,5 @@
 #include "net/transport.h"
-#include "enet/types.h"
 
-#include <bits/pthreadtypes.h>
 #include <enet/enet.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -27,20 +25,12 @@ typedef struct EventQueue {
 } EventQueue;
 
 static bool event_queue_init(EventQueue *queue) {
-  if (queue == NULL) {
-    return false;
-  }
-
   memset(queue, 0, sizeof(*queue));
   return pthread_mutex_init(&queue->mutex, NULL) == 0;
 }
 
 static void event_queue_shutdown(EventQueue *queue) {
   size_t i;
-
-  if (queue == NULL) {
-    return;
-  }
 
   pthread_mutex_lock(&queue->mutex);
   for (i = 0; i < queue->count; i++) {
@@ -59,10 +49,6 @@ static void event_queue_shutdown(EventQueue *queue) {
 
 static bool event_queue_push(EventQueue *queue, const EventQueueEntry *entry) {
   EventQueueEntry *slot;
-
-  if (queue == NULL || entry == NULL) {
-    return false;
-  }
 
   pthread_mutex_lock(&queue->mutex);
   if (queue->count >= EVENT_QUEUE_CAPACITY) {
@@ -107,7 +93,7 @@ static bool event_queue_push_copy(EventQueue *queue, TransportEventType type, in
 static bool event_queue_pop(EventQueue *queue, TransportEvent *out_event) {
   EventQueueEntry entry;
 
-  if (queue == NULL || out_event == NULL) {
+  if (out_event == NULL) {
     return false;
   }
 
@@ -554,59 +540,21 @@ bool Transport_CreateLocalPair(ITransportEndpoint **out_client, ITransportEndpoi
   return true;
 }
 
-ITransportEndpoint *Transport_CreateEnetClient(const char *host, uint16_t port) {
-  ITransportEndpoint *endpoint;
-  EnetTransportEndpoint *impl;
-  ENetAddress address;
-
-  if (host == NULL || !enet_ref_init()) {
+static ITransportEndpoint *enet_endpoint_create(bool is_server) {
+  if (!enet_ref_init()) {
     return NULL;
   }
 
-  endpoint = (ITransportEndpoint *)calloc(1, sizeof(ITransportEndpoint));
-  impl = (EnetTransportEndpoint *)calloc(1, sizeof(EnetTransportEndpoint));
-  if (endpoint == NULL || impl == NULL) {
+  ITransportEndpoint *endpoint = (ITransportEndpoint *)calloc(1, sizeof(ITransportEndpoint));
+  EnetTransportEndpoint *impl = (EnetTransportEndpoint *)calloc(1, sizeof(EnetTransportEndpoint));
+  if (endpoint == NULL || impl == NULL || !event_queue_init(&impl->inbox)) {
     free(endpoint);
     free(impl);
     enet_ref_shutdown();
     return NULL;
   }
 
-  if (!event_queue_init(&impl->inbox)) {
-    free(endpoint);
-    free(impl);
-    enet_ref_shutdown();
-    return NULL;
-  }
-
-  impl->host = enet_host_create(NULL, 1, 2, 0, 0);
-  if (impl->host == NULL) {
-    event_queue_shutdown(&impl->inbox);
-    free(endpoint);
-    free(impl);
-    enet_ref_shutdown();
-    return NULL;
-  }
-
-  if (enet_address_set_host(&address, host) != 0) {
-    enet_host_destroy(impl->host);
-    event_queue_shutdown(&impl->inbox);
-    free(endpoint);
-    free(impl);
-    enet_ref_shutdown();
-    return NULL;
-  }
-  address.port = port;
-  impl->peer = enet_host_connect(impl->host, &address, 2, 0);
-  if (impl->peer == NULL) {
-    enet_host_destroy(impl->host);
-    event_queue_shutdown(&impl->inbox);
-    free(endpoint);
-    free(impl);
-    enet_ref_shutdown();
-    return NULL;
-  }
-
+  impl->is_server = is_server;
   endpoint->impl = impl;
   endpoint->send_fn = enet_send;
   endpoint->poll_fn = enet_poll;
@@ -616,62 +564,57 @@ ITransportEndpoint *Transport_CreateEnetClient(const char *host, uint16_t port) 
   return endpoint;
 }
 
+ITransportEndpoint *Transport_CreateEnetClient(const char *host, uint16_t port) {
+  if (host == NULL) {
+    return NULL;
+  }
+
+  ITransportEndpoint *endpoint = enet_endpoint_create(false);
+  if (endpoint == NULL) {
+    return NULL;
+  }
+
+  EnetTransportEndpoint *impl = (EnetTransportEndpoint *)endpoint->impl;
+  ENetAddress address;
+  impl->host = enet_host_create(NULL, 1, 2, 0, 0);
+  if (impl->host != NULL && enet_address_set_host(&address, host) == 0) {
+    address.port = port;
+    impl->peer = enet_host_connect(impl->host, &address, 2, 0);
+  }
+
+  if (impl->peer == NULL) {
+    enet_destroy(endpoint);
+    return NULL;
+  }
+  return endpoint;
+}
+
 ITransportEndpoint *Transport_CreateEnetServer(const char *bind_ip, uint16_t port,
                                                size_t max_clients) {
-  ITransportEndpoint *endpoint;
-  EnetTransportEndpoint *impl;
+  ITransportEndpoint *endpoint = enet_endpoint_create(true);
+  if (endpoint == NULL) {
+    return NULL;
+  }
+
+  EnetTransportEndpoint *impl = (EnetTransportEndpoint *)endpoint->impl;
   ENetAddress address;
-
-  if (!enet_ref_init()) {
-    return NULL;
-  }
-
-  endpoint = (ITransportEndpoint *)calloc(1, sizeof(ITransportEndpoint));
-  impl = (EnetTransportEndpoint *)calloc(1, sizeof(EnetTransportEndpoint));
-  if (endpoint == NULL || impl == NULL) {
-    free(endpoint);
-    free(impl);
-    enet_ref_shutdown();
-    return NULL;
-  }
-
-  if (!event_queue_init(&impl->inbox)) {
-    free(endpoint);
-    free(impl);
-    enet_ref_shutdown();
-    return NULL;
-  }
-
   memset(&address, 0, sizeof(address));
   address.port = port;
 
+  bool address_ok = true;
   if (bind_ip == NULL || bind_ip[0] == '\0' || strcmp(bind_ip, "*") == 0) {
     address.host = ENET_HOST_ANY;
   } else {
-    if (enet_address_set_host(&address, bind_ip) != 0) {
-      event_queue_shutdown(&impl->inbox);
-      free(endpoint);
-      free(impl);
-      enet_ref_shutdown();
-      return NULL;
-    }
+    address_ok = enet_address_set_host(&address, bind_ip) == 0;
   }
 
-  impl->is_server = true;
-  impl->host = enet_host_create(&address, max_clients > 0 ? max_clients : 1, 2, 0, 0);
+  if (address_ok) {
+    impl->host = enet_host_create(&address, max_clients > 0 ? max_clients : 1, 2, 0, 0);
+  }
+
   if (impl->host == NULL) {
-    event_queue_shutdown(&impl->inbox);
-    free(endpoint);
-    free(impl);
-    enet_ref_shutdown();
+    enet_destroy(endpoint);
     return NULL;
   }
-
-  endpoint->impl = impl;
-  endpoint->send_fn = enet_send;
-  endpoint->poll_fn = enet_poll;
-  endpoint->service_fn = enet_service;
-  endpoint->close_fn = enet_close;
-  endpoint->destroy_fn = enet_destroy;
   return endpoint;
 }

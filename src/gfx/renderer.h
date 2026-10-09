@@ -29,7 +29,6 @@ typedef struct Renderer {
 bool Renderer_Init(Renderer *renderer);
 void Renderer_Shutdown(Renderer *renderer);
 void Renderer_SetPixelateEnabled(Renderer *renderer, bool enabled);
-bool Renderer_GetPixelateEnabled(const Renderer *renderer);
 void Renderer_DrawFrame(Renderer *renderer, const Camera3D *camera, Color clear_color,
                         const RendererFrameCallbacks *callbacks);
 
