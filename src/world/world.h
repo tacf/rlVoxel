@@ -11,6 +11,7 @@
 #include "world/chunk.h"
 #include "world/lighting.h"
 #include "world/worldgen.h"
+#include "world/world_save.h"
 
 /**
  * The World manages all chunks and provides block-level operations.
@@ -64,6 +65,10 @@ typedef struct World {
   /** True when this world runs meshing and supports draw passes. */
   bool meshing_enabled;
 
+  char save_directory[WORLD_SAVE_PATH_SIZE];
+  char storage_error[WORLD_SAVE_ERROR_SIZE];
+  bool storage_load_failed;
+
   /** Client-only remesh throttle state (0 = allow remesh this tick). */
   uint8_t replicated_mesh_skip_ticks;
 } World;
@@ -71,7 +76,8 @@ typedef struct World {
 /**
  * Initializes an authoritative server world without meshing/draw work.
  */
-void World_InitServer(World *world, int64_t seed, int render_distance);
+void World_InitServer(World *world, int64_t seed, int render_distance, const char *save_directory);
+bool World_SaveChunks(World *world);
 
 /**
  * Initializes a client-side replicated world (no procedural generation/loading).

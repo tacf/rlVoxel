@@ -23,6 +23,7 @@ typedef struct GameInputSnapshot {
   bool left_click_pressed;
   bool left_click_held;
   bool right_click_pressed;
+  uint8_t hotbar_slot_pressed; /* 1-9; zero means no selection this frame. */
 
   float mouse_wheel_delta;
   Vector2 mouse_delta;
@@ -33,7 +34,6 @@ void Game_MergeFrameInput(GameInputSnapshot *pending, const GameInputSnapshot *f
 void Game_ClearTickEdgeInput(GameInputSnapshot *input);
 void Game_BuildGameplayInputCmd(const GameInputSnapshot *input, uint32_t tick_id,
                                 uint8_t selected_block, GameplayMode gameplay_mode,
-                                bool fly_enabled, bool gameplay_enabled,
-                                GameplayInputCmd *out_cmd);
+                                bool fly_enabled, bool gameplay_enabled, GameplayInputCmd *out_cmd);
 
 #endif

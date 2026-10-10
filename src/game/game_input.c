@@ -26,6 +26,10 @@ void Game_CaptureFrameInput(GameInputSnapshot *input) {
       .mouse_wheel_delta = GetMouseWheelMove(),
       .mouse_delta = GetMouseDelta(),
   };
+  for (int slot = 1; slot <= 9; slot++) {
+    if (IsKeyPressed(KEY_ONE + slot - 1))
+      input->hotbar_slot_pressed = (uint8_t)slot;
+  }
 }
 
 void Game_MergeFrameInput(GameInputSnapshot *pending, const GameInputSnapshot *frame) {
@@ -45,6 +49,8 @@ void Game_MergeFrameInput(GameInputSnapshot *pending, const GameInputSnapshot *f
   pending->left_click_pressed = pending->left_click_pressed || frame->left_click_pressed;
   pending->left_click_held = frame->left_click_held;
   pending->right_click_pressed = pending->right_click_pressed || frame->right_click_pressed;
+  if (frame->hotbar_slot_pressed)
+    pending->hotbar_slot_pressed = frame->hotbar_slot_pressed;
   pending->mouse_wheel_delta += frame->mouse_wheel_delta;
   pending->mouse_delta = Vector2Add(pending->mouse_delta, frame->mouse_delta);
 }
@@ -57,6 +63,7 @@ void Game_ClearTickEdgeInput(GameInputSnapshot *input) {
   input->fly_toggle_pressed = false;
   input->left_click_pressed = false;
   input->right_click_pressed = false;
+  input->hotbar_slot_pressed = 0;
   input->mouse_wheel_delta = 0.0f;
   input->mouse_delta = (Vector2){0};
 }

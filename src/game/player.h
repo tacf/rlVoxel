@@ -33,6 +33,7 @@ typedef struct Player {
 
 void Player_Init(Player *player, Vector3 spawn_position);
 void Player_ApplyHotbarScroll(Player *player, float mouse_wheel_delta);
+void Player_SelectHotbarSlot(Player *player, int slot);
 void Player_Update(Player *player, const World *world, const GameInputSnapshot *input,
                    float tick_dt, bool mouse_look_enabled, bool fly_enabled);
 

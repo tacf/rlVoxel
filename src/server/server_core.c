@@ -12,6 +12,7 @@
 #include <raymath.h>
 
 #include "constants.h"
+#include "game/block_break.h"
 #include "game/game_input.h"
 #include "game/player.h"
 #include "game/raycast.h"
@@ -20,6 +21,7 @@
 #include "world/blocks.h"
 #include "world/chunk.h"
 #include "world/world.h"
+#include "world/world_save.h"
 
 static double now_seconds(void) {
   struct timespec ts;
@@ -41,8 +43,6 @@ static void sleep_millis(int ms) {
 #define SERVER_MOVE_MAX_VERT_PER_TICK 2.40f
 #define SERVER_MOVE_MAX_TICK_GAP 20u
 #define SERVER_BREAK_DAMAGE_PER_HIT 1.0f
-#define SERVER_BREAK_RECOVERY_DELAY_TICKS 10u
-#define SERVER_BREAK_RECOVERY_INTERVAL_TICKS 5u
 
 static void server_reset_break_state(ServerCore *server) {
   server->break_state_active = false;
@@ -63,7 +63,7 @@ static void server_decay_break_state(ServerCore *server) {
     return;
   }
 
-  recovery_start_tick = server->break_last_tick + SERVER_BREAK_RECOVERY_DELAY_TICKS;
+  recovery_start_tick = server->break_last_tick + BLOCK_BREAK_RECOVERY_DELAY_TICKS;
   if (server->tick_counter < recovery_start_tick) {
     return;
   }
@@ -73,14 +73,14 @@ static void server_decay_break_state(ServerCore *server) {
   }
 
   if (server->tick_counter <
-      server->break_last_recover_tick + SERVER_BREAK_RECOVERY_INTERVAL_TICKS) {
+      server->break_last_recover_tick + BLOCK_BREAK_RECOVERY_INTERVAL_TICKS) {
     return;
   }
 
   elapsed_recovery_ticks = server->tick_counter - server->break_last_recover_tick;
-  recovery_steps = elapsed_recovery_ticks / SERVER_BREAK_RECOVERY_INTERVAL_TICKS;
+  recovery_steps = elapsed_recovery_ticks / BLOCK_BREAK_RECOVERY_INTERVAL_TICKS;
   server->break_damage -= (float)recovery_steps * SERVER_BREAK_DAMAGE_PER_HIT;
-  server->break_last_recover_tick += recovery_steps * SERVER_BREAK_RECOVERY_INTERVAL_TICKS;
+  server->break_last_recover_tick += recovery_steps * BLOCK_BREAK_RECOVERY_INTERVAL_TICKS;
   if (server->break_damage <= 0.0f) {
     server_reset_break_state(server);
   }
@@ -521,8 +521,11 @@ static void server_reset_client_state(ServerCore *server) {
   memset(&server->current_move, 0, sizeof(server->current_move));
   server->pending_move_available = false;
   server->last_applied_input_tick = 0;
-  server->gameplay_mode = GAMEPLAY_MODE_CREATIVE;
-  server->fly_enabled = false;
+  server->gameplay_mode = server->player.gameplay_mode;
+  server->fly_enabled = server->player.fly_enabled;
+  server->current_input.gameplay_mode = (uint8_t)server->gameplay_mode;
+  server->current_input.fly_enabled = server->fly_enabled;
+  server->current_input.selected_block = server->player.selected_block;
   server->player.gameplay_mode = server->gameplay_mode;
   server->player.fly_enabled = server->fly_enabled;
   server_reset_break_state(server);
@@ -598,15 +601,57 @@ void ServerCore_Tick(ServerCore *server) {
 
   server_decay_break_state(server);
   server->player.selected_block = input.selected_block;
+  for (int slot = 0; slot < PLAYER_HOTBAR_SLOTS; slot++) {
+    if (server->player.hotbar_blocks[slot] == input.selected_block) {
+      server->player.hotbar_index = slot;
+      break;
+    }
+  }
   server_apply_interactions(server, &input);
 
   World_Update(&server->world, server->player.position, 1.0f / (float)server->config.tick_rate);
+  if (server->world.storage_error[0])
+    atomic_store(&server->save_status, -1);
   server_stream_visible_chunks(server);
   if (should_send_player_state || ((server->tick_counter % 20u) == 0u)) {
     server_send_player_state(server);
   }
 
   server->tick_counter++;
+  if (server->config.save_directory[0] &&
+      server->tick_counter % ((uint32_t)server->config.tick_rate * 60u) == 0) {
+    ServerCore_Save(server);
+  }
+}
+
+bool ServerCore_Save(ServerCore *server) {
+  if (!server->config.save_directory[0])
+    return true;
+  bool ok = World_SaveChunks(&server->world);
+  if (ok) {
+    WorldSaveInfo info = {
+        .seed = server->save_info.seed,
+        .last_saved = (uint64_t)time(NULL),
+        .world_time = server->world.world_time,
+        .has_player = true,
+        .position = server->player.position,
+        .yaw = server->player.yaw,
+        .pitch = server->player.pitch,
+        .gameplay_mode = server->player.gameplay_mode,
+        .fly_enabled = server->player.fly_enabled,
+        .hotbar_index = server->player.hotbar_index,
+        .selected_block = server->player.selected_block,
+    };
+    memcpy(info.directory, server->save_info.directory, sizeof(info.directory));
+    memcpy(info.name, server->save_info.name, sizeof(info.name));
+    ok = WorldSave_WriteInfo(&info, server->world.storage_error);
+    if (ok)
+      server->save_info = info;
+  }
+  atomic_store(&server->save_status, ok ? 1 : -1);
+  if (!ok)
+    TraceLog(LOG_ERROR, "World save failed: %s", server->world.storage_error);
+  return ok;
 }
 
 static void *server_thread_main(void *arg) {
@@ -660,6 +705,12 @@ bool ServerCore_Init(ServerCore *server, const ServerConfig *config, NetEndpoint
 
   memset(server, 0, sizeof(*server));
   server->config = *config;
+  if (config->save_directory[0]) {
+    if (!WorldSave_ReadInfo(config->save_directory, &server->save_info,
+                            server->world.storage_error))
+      return false;
+    server->config.seed = server->save_info.seed;
+  }
   if (server->config.tick_rate <= 0) {
     server->config.tick_rate = (int)GAME_TICK_RATE;
   }
@@ -676,12 +727,41 @@ bool ServerCore_Init(ServerCore *server, const ServerConfig *config, NetEndpoint
   server->next_sequence = 1;
   atomic_store(&server->running, true);
 
-  World_InitServer(&server->world, server->config.seed, server->config.render_distance);
+  World_InitServer(&server->world, server->config.seed, server->config.render_distance,
+                   server->config.save_directory);
   server->world_initialized = true;
+  if (server->world.storage_load_failed) {
+    server->owns_net = false;
+    ServerCore_Shutdown(server);
+    return false;
+  }
 
   spawn_y = World_GetTopY(&server->world, 0, 0);
   spawn = (Vector3){0.5f, (float)spawn_y + 2.0f, 0.5f};
   Player_Init(&server->player, spawn);
+  if (server->config.save_directory[0]) {
+    WorldSaveInfo *info = &server->save_info;
+    World_SetTime(&server->world, info->world_time);
+    server->player.gameplay_mode = (GameplayMode)info->gameplay_mode;
+    server->player.fly_enabled = info->fly_enabled;
+    if (info->has_player) {
+      server->player.position = server->player.previous_position = info->position;
+      server->player.yaw = server->player.previous_yaw = info->yaw;
+      server->player.pitch = server->player.previous_pitch = info->pitch;
+      server->player.hotbar_index = info->hotbar_index;
+      server->player.selected_block = info->selected_block;
+      int cx = floor_div16((int)floorf(info->position.x));
+      int cz = floor_div16((int)floorf(info->position.z));
+      for (int dz = -1; dz <= 1; dz++)
+        for (int dx = -1; dx <= 1; dx++)
+          World_GetOrCreateChunk(&server->world, cx + dx, cz + dz);
+      if (server->world.storage_load_failed) {
+        server->owns_net = false;
+        ServerCore_Shutdown(server);
+        return false;
+      }
+    }
+  }
   server_reset_client_state(server);
 
   return true;

@@ -5,6 +5,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -49,6 +50,8 @@
 #define WORLD_LIGHT_QUEUE_OVERLOAD_THRESHOLD 700000
 #define WORLD_LIGHT_QUEUE_CAPACITY_HEADROOM 65536
 #define WORLD_LIGHT_NODES_ON_BLOCK_EDIT 4096
+/* An edge/corner edit affects at most four chunks, including diagonal AO samples. */
+#define WORLD_EDIT_MESH_BUDGET 4
 
 typedef struct ChunkSortEntry ChunkSortEntry;
 static ChunkSortEntry *g_solid_draw_entries = NULL;
@@ -106,7 +109,7 @@ static void world_compact_dirty_chunk_queue(int64_t **queue, ptrdiff_t *read_ind
   }
 }
 
-static bool world_dequeue_dirty_chunk_key(World *world, int64_t *out_key) {
+static bool world_dequeue_dirty_chunk_key(World *world, int64_t *out_key, bool priority_only) {
   ptrdiff_t entry_index;
   int64_t key;
 
@@ -124,6 +127,9 @@ static bool world_dequeue_dirty_chunk_key(World *world, int64_t *out_key) {
     return true;
   }
 
+  if (priority_only)
+    return false;
+
   while (world->dirty_chunk_read_index < arrlen(world->dirty_chunk_keys)) {
     key = world->dirty_chunk_keys[world->dirty_chunk_read_index++];
     entry_index = hmgeti(world->dirty_chunk_key_set, key);
@@ -139,6 +145,35 @@ static bool world_dequeue_dirty_chunk_key(World *world, int64_t *out_key) {
   }
 
   return false;
+}
+
+static int world_rebuild_dirty_chunks(World *world, int budget, bool priority_only) {
+  int rebuilt = 0;
+  int64_t key;
+  while (rebuilt < budget && world_dequeue_dirty_chunk_key(world, &key, priority_only)) {
+    Chunk *chunk = voxel_chunkmap_get(world->chunks, key);
+    if (!chunk || !VoxelChunk_HasState(chunk, DIRTY))
+      continue;
+    WORLD_LOG("Rebuilding chunk (%d, %d)", chunk->cx, chunk->cz);
+    Mesher_RebuildChunk(world, chunk);
+    VoxelChunk_UnsetState(chunk, DIRTY);
+    rebuilt++;
+  }
+  return rebuilt;
+}
+
+static void world_mark_block_edit_dirty(World *world, int cx, int cz, int lx, int lz) {
+  if (!world->meshing_enabled)
+    return;
+  int dx = lx == 0 ? -1 : lx == WORLD_CHUNK_SIZE_X - 1 ? 1 : 0;
+  int dz = lz == 0 ? -1 : lz == WORLD_CHUNK_SIZE_Z - 1 ? 1 : 0;
+  World_MarkChunkDirtyPriority(world, cx, cz);
+  if (dx)
+    World_MarkChunkDirtyPriority(world, cx + dx, cz);
+  if (dz)
+    World_MarkChunkDirtyPriority(world, cx, cz + dz);
+  if (dx && dz)
+    World_MarkChunkDirtyPriority(world, cx + dx, cz + dz);
 }
 
 static void world_relight_columns_around(World *world, int x, int z, int radius) {
@@ -171,7 +206,20 @@ Chunk *World_GetOrCreateChunk(World *world, int cx, int cz) {
 
   Chunk_Init(chunk, cx, cz);
   if (world->authoritative_mode) {
-    WorldGen_GenerateChunk(&world->generator, chunk);
+    WorldSaveLoadResult loaded =
+        world->save_directory[0]
+            ? WorldSave_ReadChunk(world->save_directory, chunk, world->storage_error)
+            : WORLD_SAVE_MISSING;
+    if (loaded == WORLD_SAVE_ERROR) {
+      world->storage_load_failed = true;
+      Chunk_Shutdown(chunk);
+      free(chunk);
+      return NULL;
+    }
+    if (loaded == WORLD_SAVE_MISSING)
+      WorldGen_GenerateChunk(&world->generator, chunk);
+    else
+      VoxelChunk_SetState(chunk, GENERATED);
     Lighting_InitializeChunkSkylight(world, chunk);
   } else {
     VoxelChunk_SetState(chunk, GENERATED);
@@ -228,10 +276,7 @@ bool World_SetBlock(World *world, int x, int y, int z, uint8_t block_id) {
   Chunk_SetBlock(chunk, lx, y, lz, block_id);
   Chunk_RecomputeHeightColumn(chunk, lx, lz);
 
-  if (world->meshing_enabled) {
-    /* Direct block edits should always queue a remesh right away. */
-    World_MarkChunkDirtyPriority(world, cx, cz);
-  }
+  world_mark_block_edit_dirty(world, cx, cz, lx, lz);
 
   if (world->authoritative_mode) {
     /*
@@ -239,10 +284,6 @@ bool World_SetBlock(World *world, int x, int y, int z, uint8_t block_id) {
      * lighting and avoid dark side-faces after local block edits.
      */
     world_relight_columns_around(world, x, z, 1);
-  }
-
-  if (world->meshing_enabled && (lx == 0 || lx == 15 || lz == 0 || lz == 15)) {
-    World_MarkNeighborsDirtyPriority(world, cx, cz);
   }
 
   if (world->authoritative_mode) {
@@ -526,6 +567,10 @@ static void unload_far_chunks(World *world, int center_cx, int center_cz) {
   for (ptrdiff_t i = 0; i < remove_count; i++) {
     Chunk *chunk = voxel_chunkmap_get(world->chunks, keys_to_remove[i]);
     if (chunk) {
+      /* Keep the chunk resident when saving fails; edits must not be discarded. */
+      if (world->save_directory[0] &&
+          !WorldSave_WriteChunk(world->save_directory, chunk, world->storage_error))
+        continue;
       Chunk_Shutdown(chunk);
       free(chunk);
       voxel_chunkmap_remove(&world->chunks, keys_to_remove[i]);
@@ -537,7 +582,7 @@ static void unload_far_chunks(World *world, int center_cx, int center_cz) {
 
 static void world_init_internal(World *world, int64_t seed, int render_distance,
                                 Texture2D terrain_texture, bool authoritative_mode,
-                                bool meshing_enabled) {
+                                bool meshing_enabled, const char *save_directory) {
   memset(world, 0, sizeof(*world));
 
   world->seed = seed;
@@ -546,6 +591,8 @@ static void world_init_internal(World *world, int64_t seed, int render_distance,
   world->world_time = 6000.0f;
   world->authoritative_mode = authoritative_mode;
   world->meshing_enabled = meshing_enabled;
+  if (save_directory)
+    snprintf(world->save_directory, sizeof(world->save_directory), "%s", save_directory);
 
   world->chunks = voxel_chunkmap_create();
 
@@ -582,12 +629,27 @@ static void world_init_internal(World *world, int64_t seed, int render_distance,
   update_ambient_darkness(world);
 }
 
-void World_InitServer(World *world, int64_t seed, int render_distance) {
-  world_init_internal(world, seed, render_distance, (Texture2D){0}, true, false);
+void World_InitServer(World *world, int64_t seed, int render_distance, const char *save_directory) {
+  world_init_internal(world, seed, render_distance, (Texture2D){0}, true, false, save_directory);
 }
 
 void World_InitReplicated(World *world, int render_distance, Texture2D terrain_texture) {
-  world_init_internal(world, 0, render_distance, terrain_texture, false, true);
+  world_init_internal(world, 0, render_distance, terrain_texture, false, true, NULL);
+}
+
+bool World_SaveChunks(World *world) {
+  if (!world->save_directory[0])
+    return true;
+  if (world->storage_load_failed)
+    return false;
+  int count = voxel_chunkmap_count(world->chunks);
+  for (int i = 0; i < count; i++) {
+    const Chunk *chunk = voxel_chunkmap_iter_value(world->chunks, i);
+    if (!WorldSave_WriteChunk(world->save_directory, chunk, world->storage_error))
+      return false;
+  }
+  world->storage_error[0] = '\0';
+  return true;
 }
 
 void World_Shutdown(World *world) {
@@ -654,35 +716,19 @@ void World_Update(World *world, Vector3 player_pos, float dt) {
   }
 
   if (world->meshing_enabled) {
-    int rebuild_budget = 0;
     Profiler_BeginSection("ChunkMeshing");
-    /*
-     * Client-replicated worlds avoid bursty remesh work while streaming chunks.
-     * We only permit one remesh every other simulation tick.
-     */
-    if (world->authoritative_mode) {
-      rebuild_budget = 4;
+    /* Edits bypass the streaming throttle. Rebuild their boundary dependencies
+     * together before rendering, and defer background work on edit ticks. */
+    int rebuilt = world_rebuild_dirty_chunks(world, WORLD_EDIT_MESH_BUDGET, true);
+    if (rebuilt > 0) {
+      world->replicated_mesh_skip_ticks = 1;
+    } else if (world->authoritative_mode) {
+      rebuilt = world_rebuild_dirty_chunks(world, 4, false);
     } else if (world->replicated_mesh_skip_ticks > 0) {
       world->replicated_mesh_skip_ticks--;
     } else {
-      rebuild_budget = 1;
+      rebuilt = world_rebuild_dirty_chunks(world, 1, false);
       world->replicated_mesh_skip_ticks = 1;
-    }
-    int rebuilt = 0;
-    while (rebuild_budget > 0) {
-      int64_t key;
-      if (!world_dequeue_dirty_chunk_key(world, &key)) {
-        break;
-      }
-      Chunk *chunk = voxel_chunkmap_get(world->chunks, key);
-      if (chunk && VoxelChunk_HasState(chunk, DIRTY)) {
-        WORLD_LOG("Rebuilding chunk (%d, %d)", chunk->cx, chunk->cz);
-        Mesher_RebuildChunk(world, chunk);
-        VoxelChunk_UnsetState(chunk, DIRTY);
-
-        rebuild_budget--;
-        rebuilt++;
-      }
     }
     world_compact_dirty_chunk_queue(&world->dirty_chunk_priority_keys,
                                     &world->dirty_chunk_priority_read_index);
@@ -911,12 +957,7 @@ bool World_ApplyBlockDelta(World *world, int x, int y, int z, uint8_t block_id, 
   Chunk_SetSkyLight(chunk, lx, y, lz, skylight);
   Chunk_RecomputeHeightColumn(chunk, lx, lz);
 
-  if (world->meshing_enabled) {
-    World_MarkChunkDirtyPriority(world, cx, cz);
-    if (lx == 0 || lx == 15 || lz == 0 || lz == 15) {
-      World_MarkNeighborsDirtyPriority(world, cx, cz);
-    }
-  }
+  world_mark_block_edit_dirty(world, cx, cz, lx, lz);
 
   return true;
 }

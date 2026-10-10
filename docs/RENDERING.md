@@ -166,7 +166,7 @@ producing a "washed out" double-blended appearance.
 
 The mesher only generates water faces where the neighbor is AIR. Water faces
 against ice, opaque blocks, and other water are culled, so water never
-produces faces at ice-water boundaries; only ice does. That keeps coplanar
+produces faces at ice-water boundaries but ice does. That keeps coplanar
 faces from z-fighting between the two render passes.
 
 ### Water surface height
@@ -207,7 +207,7 @@ names (`"mvp"`, `"texture0"`, `"colDiffuse"`, etc.) are automatically mapped to
 `GetShaderLocation()`.
 
 The `opaque_ao` shader uses custom uniforms `uAoMin` and `uAoCurve` that raylib
-doesn't auto-resolve; these get set explicitly via `GetShaderLocation()` +
+doesn't auto-resolve. As such these to be set explicitly via `GetShaderLocation()` +
 `SetShaderValue()` at shader load time.
 
 ## Blend Mode Notes

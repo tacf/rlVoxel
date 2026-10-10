@@ -41,7 +41,6 @@ typedef struct Game {
 
   Texture2D terrain_texture;
   Font font;
-  void *clay_memory;
 
   int64_t seed;
   int network_tick_rate;
@@ -86,6 +85,8 @@ typedef struct Game {
   bool pending_lock_request;
   bool lock_before_escape_menu;
   bool quit_requested;
+  bool return_to_menu_requested;
+  char save_error[WORLD_SAVE_ERROR_SIZE];
 
   // Escape menu state
   bool show_escape_menu;
@@ -107,14 +108,15 @@ typedef struct Game {
   bool profiler_renderer_initialized;
   bool telemetry_initialized;
   bool imgui_initialized;
-  bool clay_initialized;
   bool world_initialized;
   bool renderer_initialized;
 } Game;
 
 bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connect_host,
-               uint16_t connect_port);
+               uint16_t connect_port, const char *save_directory);
 void Game_Shutdown(Game *game);
+/* Stops the local server before saving. On failure, gameplay remains available for retry. */
+bool Game_Save(Game *game);
 
 void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt);
 void Game_ApplyFrameLook(Game *game, GameInputSnapshot *frame_input);

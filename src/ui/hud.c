@@ -144,6 +144,7 @@ static HudHotbarMetrics hud_hotbar_metrics(void) {
 }
 
 void HUD_BuildHotbar(const Player *player) {
+  (void)player;
   HudHotbarMetrics m = hud_hotbar_metrics();
 
   CLAY({
@@ -163,8 +164,28 @@ void HUD_BuildHotbar(const Player *player) {
             {
                 .sizing = {.width = CLAY_SIZING_FIXED(m.panel_width),
                            .height = CLAY_SIZING_FIXED(m.panel_height)},
+                .padding = CLAY_PADDING_ALL((uint16_t)m.panel_padding),
+                .childGap = (uint16_t)m.slot_gap,
             },
-    }) {}
+    }) {
+      static const char slot_numbers[] = "123456789";
+      for (int i = 0; i < PLAYER_HOTBAR_SLOTS; i++) {
+        CLAY({.id = CLAY_IDI("hud_hotbar_slot", i),
+              .layout = {
+                  .sizing = {.width = CLAY_SIZING_FIXED(m.slot_size),
+                             .height = CLAY_SIZING_FIXED(m.slot_size)},
+                  .padding = {.top = (uint16_t)(3 * m.scale), .right = (uint16_t)(3 * m.scale)},
+                  .childAlignment = {.x = CLAY_ALIGN_X_LEFT}}}) {
+          CLAY({.layout = {.padding = {.left = (uint16_t)(2 * m.scale),
+                                       .right = (uint16_t)(2 * m.scale)}}}) {
+            CLAY_TEXT(((Clay_String){
+                          .isStaticallyAllocated = true, .length = 1, .chars = &slot_numbers[i]}),
+                      CLAY_TEXT_CONFIG({.fontSize = (uint16_t)(12 * m.scale),
+                                        .textColor = {255, 255, 255, 255}}));
+          }
+        }
+      }
+    }
   }
 }
 
@@ -182,6 +203,12 @@ typedef struct HudHotbarCache {
 } HudHotbarCache;
 
 static HudHotbarCache s_hotbar_cache = {0};
+
+void HUD_Shutdown(void) {
+  if (s_hotbar_cache.valid)
+    UnloadRenderTexture(s_hotbar_cache.texture);
+  s_hotbar_cache = (HudHotbarCache){0};
+}
 
 static void hud_draw_hotbar_background(const HudHotbarMetrics *m, const Player *player) {
   DrawRectangle(0, 0, (int)m->panel_width, (int)m->panel_height, (Color){210, 210, 210, 110});

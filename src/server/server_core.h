@@ -31,6 +31,7 @@ typedef struct ServerConfig {
   char bind[64];
   uint16_t port;
   ServerMode mode;
+  char save_directory[WORLD_SAVE_PATH_SIZE];
 } ServerConfig;
 
 /**
@@ -43,6 +44,8 @@ typedef struct ServerCore {
   World world;
   Player player;
   bool world_initialized;
+  WorldSaveInfo save_info;
+  atomic_int save_status;
 
   NetEndpoint *net;
   bool owns_net;
@@ -99,5 +102,7 @@ bool ServerCore_IsRunning(ServerCore *server);
 
 /** Runs one authoritative tick (used by thread loop and tests). */
 void ServerCore_Tick(ServerCore *server);
+/* Call from the server thread, or after ServerCore_Stop has joined it. */
+bool ServerCore_Save(ServerCore *server);
 
 #endif

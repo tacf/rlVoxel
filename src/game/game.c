@@ -2,12 +2,14 @@
 
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <raymath.h>
 #include <stdlib.h>
 
 #include "constants.h"
+#include "game/block_break.h"
 #include "gfx/clouds.h"
 #include "gfx/renderer.h"
 #include "gfx/selection_highlight.h"
@@ -22,6 +24,7 @@
 #include "ui/clay_render.h"
 #include "ui/font_atlas.h"
 #include "ui/hud.h"
+#include "ui/menu.h"
 #include <clay.h>
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
@@ -52,18 +55,12 @@
 #define GAME_MOVE_POSITION_EPSILON 0.0005f
 #define GAME_MOVE_VELOCITY_EPSILON 0.0010f
 #define GAME_MOVE_ANGLE_EPSILON 0.0005f
-#define GAME_SURVIVAL_BREAK_PULSE_TICKS 5u
 
 /*
- * Local (server idependent) break animation.
+ * Local break animation follows the authoritative hit cadence.
  */
 #define GAME_BREAK_VISUAL_STAGES 10
 #define GAME_BREAK_VISUAL_HOLD_PROGRESS 0.999f
-#define GAME_BREAK_VISUAL_MIN_SECONDS 0.22f
-#define GAME_BREAK_VISUAL_PER_DURABILITY_SECONDS 0.06f
-#define GAME_BREAK_RECOVERY_DELAY_TICKS 10u
-#define GAME_BREAK_RECOVERY_INTERVAL_TICKS 5u
-#define GAME_BREAK_VISUAL_DECAY_STEP 0.14f
 
 /* Build raylib camera vectors from a player pose (position + yaw/pitch). */
 static void set_camera_from_pose(Game *game, Vector3 position, float yaw, float pitch) {
@@ -543,19 +540,6 @@ static bool game_raycast_target_block(const Game *game, VoxelRaycastHit *out_hit
          out_hit->hit;
 }
 
-static float game_break_visual_duration_seconds(uint8_t block_id) {
-  int durability;
-
-  durability = Block_GetDurability(block_id);
-  if (durability <= 0) {
-    return 0.0f;
-  }
-
-  return Clamp(GAME_BREAK_VISUAL_MIN_SECONDS +
-                   (float)durability * GAME_BREAK_VISUAL_PER_DURABILITY_SECONDS,
-               GAME_BREAK_VISUAL_MIN_SECONDS, 1.20f);
-}
-
 static void game_decay_break_visual(Game *game) {
   uint32_t recovery_start_tick;
   uint32_t elapsed_recovery_ticks;
@@ -565,7 +549,7 @@ static void game_decay_break_visual(Game *game) {
     return;
   }
 
-  recovery_start_tick = game->break_visual_last_tick + GAME_BREAK_RECOVERY_DELAY_TICKS;
+  recovery_start_tick = game->break_visual_last_tick + BLOCK_BREAK_RECOVERY_DELAY_TICKS;
   if (game->network_tick_counter < recovery_start_tick) {
     return;
   }
@@ -575,14 +559,20 @@ static void game_decay_break_visual(Game *game) {
   }
 
   if (game->network_tick_counter <
-      game->break_visual_last_recover_tick + GAME_BREAK_RECOVERY_INTERVAL_TICKS) {
+      game->break_visual_last_recover_tick + BLOCK_BREAK_RECOVERY_INTERVAL_TICKS) {
     return;
   }
 
   elapsed_recovery_ticks = game->network_tick_counter - game->break_visual_last_recover_tick;
-  recovery_steps = elapsed_recovery_ticks / GAME_BREAK_RECOVERY_INTERVAL_TICKS;
-  game->break_visual_damage -= (float)recovery_steps * GAME_BREAK_VISUAL_DECAY_STEP;
-  game->break_visual_last_recover_tick += recovery_steps * GAME_BREAK_RECOVERY_INTERVAL_TICKS;
+  recovery_steps = elapsed_recovery_ticks / BLOCK_BREAK_RECOVERY_INTERVAL_TICKS;
+  int durability = Block_GetDurability(World_GetBlock(&game->world, game->break_visual_x,
+                                                      game->break_visual_y, game->break_visual_z));
+  if (durability <= 0) {
+    game_reset_break_visual(game);
+    return;
+  }
+  game->break_visual_damage -= (float)recovery_steps / (float)durability;
+  game->break_visual_last_recover_tick += recovery_steps * BLOCK_BREAK_RECOVERY_INTERVAL_TICKS;
 
   if (game->break_visual_damage <= 0.0f) {
     game_reset_break_visual(game);
@@ -617,9 +607,11 @@ static void game_update_break_visual(Game *game, const VoxelRaycastHit *hit, flo
     game->break_visual_z = hit->block_z;
     game->break_visual_damage = 0.0f;
     game->break_visual_last_recover_tick = 0u;
+    /* A new target starts with an immediate hit, not the previous target's pulse phase. */
+    game->last_survival_break_send_tick = 0u;
   }
 
-  duration_seconds = game_break_visual_duration_seconds(hit->block_id);
+  duration_seconds = BlockBreak_DurationSeconds(durability, game->network_tick_rate);
   if (duration_seconds <= 0.0f) {
     return;
   }
@@ -749,7 +741,7 @@ static void game_draw_debug_ui_pass(void *ctx) {
 }
 
 bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connect_host,
-               uint16_t connect_port) {
+               uint16_t connect_port, const char *save_directory) {
   NetEndpoint *server_endpoint = NULL;
 
   *game = (Game){0};
@@ -805,19 +797,6 @@ bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connec
   SetTextureFilter(game->font.texture, TEXTURE_FILTER_POINT);
   SetTextureFilter(game->terrain_texture, TEXTURE_FILTER_POINT);
 
-  uint32_t clay_memory_size = Clay_MinMemorySize();
-  game->clay_memory = malloc(clay_memory_size);
-  if (game->clay_memory == NULL) {
-    Game_Shutdown(game);
-    return false;
-  }
-  Clay_Arena clay_arena =
-      Clay_CreateArenaWithCapacityAndMemory(clay_memory_size, game->clay_memory);
-  Clay_Initialize(clay_arena, (Clay_Dimensions){(float)GetScreenWidth(), (float)GetScreenHeight()},
-                  (Clay_ErrorHandler){0});
-  Clay_SetMeasureTextFunction(ClayRender_MeasureText, &game->font);
-  game->clay_initialized = true;
-
   if (game->remote_mode) {
     uint16_t port = (connect_port == 0) ? 25565u : connect_port;
     game->net = Net_Connect(connect_host, port);
@@ -836,6 +815,9 @@ bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connec
         .port = 0,
         .mode = SERVER_MODE_INTERNAL,
     };
+    if (save_directory)
+      snprintf(server_config.save_directory, sizeof(server_config.save_directory), "%s",
+               save_directory);
     strncpy(server_config.bind, "*", sizeof(server_config.bind) - 1);
 
     if (!Net_CreateLocalPair(&game->net, &server_endpoint)) {
@@ -846,15 +828,13 @@ bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connec
     game->owns_net = true;
 
     if (!ServerCore_Init(&game->internal_server, &server_config, server_endpoint, true)) {
+      snprintf(game->save_error, sizeof(game->save_error), "%s",
+               game->internal_server.world.storage_error);
+      Net_Destroy(server_endpoint);
       Game_Shutdown(game);
       return false;
     }
     game->internal_server_initialized = true;
-
-    if (!ServerCore_StartThread(&game->internal_server)) {
-      Game_Shutdown(game);
-      return false;
-    }
   }
 
   World_InitReplicated(&game->world, render_distance, game->terrain_texture);
@@ -865,6 +845,13 @@ bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connec
   Player_Init(&game->player, spawn);
   game->player.gameplay_mode = game->gameplay_mode;
   game->player.fly_enabled = game->fly_enabled;
+  if (game->internal_server_initialized && save_directory) {
+    /* Copy before starting the server thread; it owns this state afterward. */
+    game->player = game->internal_server.player;
+    game->gameplay_mode = game->player.gameplay_mode;
+    game->fly_enabled = game->player.fly_enabled;
+    game->seed = game->internal_server.config.seed;
+  }
   game_reset_break_visual(game);
   game->view_yaw = game->player.yaw;
   game->view_pitch = game->player.pitch;
@@ -893,7 +880,38 @@ bool Game_Init(Game *game, int64_t seed, int render_distance, const char *connec
       .cell_map = NULL,
   };
   Clouds_Init(&game->clouds);
+  if (game->internal_server_initialized && !ServerCore_StartThread(&game->internal_server)) {
+    Game_Shutdown(game);
+    return false;
+  }
   return true;
+}
+
+bool Game_Save(Game *game) {
+  if (!game->internal_server_initialized)
+    return true;
+  ServerCore_Stop(&game->internal_server);
+  /* Consume the final local commands after joining, then save the current view/selection. */
+  atomic_store(&game->internal_server.running, true);
+  ServerCore_Tick(&game->internal_server);
+  atomic_store(&game->internal_server.running, false);
+  game->internal_server.player.position = game->player.position;
+  game->internal_server.player.yaw = game->view_yaw;
+  game->internal_server.player.pitch = game->view_pitch;
+  game->internal_server.player.gameplay_mode = game->gameplay_mode;
+  game->internal_server.player.fly_enabled = game->fly_enabled;
+  game->internal_server.player.hotbar_index = game->player.hotbar_index;
+  game->internal_server.player.selected_block = game->player.selected_block;
+  if (ServerCore_Save(&game->internal_server))
+    return true;
+  snprintf(game->save_error, sizeof(game->save_error), "%s",
+           game->internal_server.world.storage_error);
+  game->return_to_menu_requested = false;
+  game->quit_requested = false;
+  if (!ServerCore_StartThread(&game->internal_server))
+    snprintf(game->save_error, sizeof(game->save_error),
+             "Save failed and the server could not restart.");
+  return false;
 }
 
 void Game_Shutdown(Game *game) {
@@ -919,16 +937,11 @@ void Game_Shutdown(Game *game) {
   }
 
   Clouds_Shutdown(&game->clouds);
+  HUD_Shutdown();
 
   if (game->font.texture.id != 0) {
     UnloadFont(game->font);
     game->font = (Font){0};
-  }
-
-  if (game->clay_initialized) {
-    free(game->clay_memory);
-    game->clay_memory = NULL;
-    game->clay_initialized = false;
   }
 
   if (game->renderer_initialized) {
@@ -1043,6 +1056,8 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
   bool force_break_pulse = false;
   bool gameplay_enabled = (!game_is_paused(game) && game->cursor_locked);
   Player_ApplyHotbarScroll(&game->player, hotbar_scroll);
+  if (gameplay_enabled && input->hotbar_slot_pressed)
+    Player_SelectHotbarSlot(&game->player, input->hotbar_slot_pressed - 1);
 
   Profiler_BeginSection("Network");
   game_process_network(game);
@@ -1053,8 +1068,7 @@ void Game_Tick(Game *game, const GameInputSnapshot *input, float tick_dt) {
 
   if (game->gameplay_mode == GAMEPLAY_MODE_SURVIVAL && gameplay_enabled && input->left_click_held) {
     uint32_t ticks_since_pulse = game->network_tick_counter - game->last_survival_break_send_tick;
-    if (game->last_survival_break_send_tick == 0u ||
-        ticks_since_pulse >= GAME_SURVIVAL_BREAK_PULSE_TICKS) {
+    if (game->last_survival_break_send_tick == 0u || ticks_since_pulse >= BLOCK_BREAK_PULSE_TICKS) {
       gameplay_cmd.buttons |= GAMEPLAY_INPUT_LEFT_CLICK;
       force_break_pulse = true;
     }
@@ -1163,101 +1177,13 @@ void Game_Draw(Game *game, float alpha) {
   Profiler_EndSection();
 }
 
-static bool menu_item_clicked(Rectangle rect) {
-  return CheckCollisionPointRec(GetMousePosition(), rect) &&
-         IsMouseButtonReleased(MOUSE_LEFT_BUTTON);
-}
-
-static void draw_text_centered(Font font, const char *text, Rectangle area, float size) {
-  Vector2 text_size = MeasureTextEx(font, text, size, 1.0f);
-  Vector2 position = {area.x + (area.width - text_size.x) * 0.5f,
-                      area.y + (area.height - text_size.y) * 0.5f};
-  DrawTextEx(font, text, position, size, 1.0f, WHITE);
-}
-
-static bool draw_menu_button(Font font, const char *label, Rectangle rect, float scale) {
-  DrawRectangleRec(rect, (Color){70, 70, 70, 220});
-  draw_text_centered(font, label, rect, 18.0f * scale);
-  return menu_item_clicked(rect);
-}
-
-static bool draw_menu_checkbox(Font font, const char *label, Rectangle box, bool checked,
-                               float scale) {
-  float font_size = 18.0f * scale;
-  DrawRectangleRec(box, checked ? (Color){80, 200, 80, 255} : (Color){180, 180, 180, 255});
-  DrawRectangleLinesEx(box, 2.0f * scale, WHITE);
-  DrawTextEx(font, label,
-             (Vector2){box.x + box.width + 10.0f * scale, box.y + (box.height - font_size) * 0.5f},
-             font_size, 1.0f, WHITE);
-  return menu_item_clicked(box);
-}
-
-static void draw_pause_menu(Game *game) {
-  int screen_w = GetScreenWidth();
-  int screen_h = GetScreenHeight();
-  float scale = fmaxf((float)screen_w / 1280.0f, 1.0f);
-
-  float panel_w = 240.0f * scale;
-  float panel_h = (game->show_options ? 268.0f : 180.0f) * scale;
-  float panel_x = (screen_w - panel_w) * 0.5f;
-  float panel_y = (screen_h - panel_h) * 0.5f;
-  DrawRectangle((int)panel_x, (int)panel_y, (int)panel_w, (int)panel_h, (Color){40, 40, 40, 230});
-
-  float title_size = 22.0f * scale;
-  float button_w = 200.0f * scale;
-  float button_h = 32.0f * scale;
-  float checkbox_size = 18.0f * scale;
-  float x = panel_x + (panel_w - button_w) * 0.5f;
-  float y = panel_y + 20.0f * scale;
-
-  Rectangle title_area = {panel_x, y, panel_w, title_size};
-  draw_text_centered(game->font, game->show_options ? "Options" : "Game Paused", title_area,
-                     title_size);
-
-  if (game->show_options) {
-    y += title_size + 16.0f * scale;
-    if (draw_menu_checkbox(game->font, "Clouds", (Rectangle){x, y, checkbox_size, checkbox_size},
-                           game->clouds_enabled, scale)) {
-      game->clouds_enabled = !game->clouds_enabled;
-    }
-
-    y += checkbox_size + 20.0f * scale;
-    if (draw_menu_checkbox(game->font, "Pixel Look",
-                           (Rectangle){x, y, checkbox_size, checkbox_size},
-                           game->pixel_look_enabled, scale)) {
-      game->pixel_look_enabled = !game->pixel_look_enabled;
-      Renderer_SetPixelateEnabled(&game->renderer, game->pixel_look_enabled);
-      Mesher_SetGeometryPixelSnapEnabled(game->pixel_look_enabled);
-    }
-
-    y += checkbox_size + 20.0f * scale;
-    if (draw_menu_button(game->font, "Back", (Rectangle){x, y, button_w, button_h}, scale)) {
-      game->show_options = false;
-      game->show_escape_menu = true;
-    }
-    return;
-  }
-
-  y += title_size + 20.0f * scale;
-  if (draw_menu_button(game->font, "Options", (Rectangle){x, y, button_w, button_h}, scale)) {
-    game->show_escape_menu = false;
-    game->show_options = true;
-  }
-
-  y += button_h + 8.0f * scale;
-  if (draw_menu_button(game->font, "Quit", (Rectangle){x, y, button_w, button_h}, scale)) {
-    game->quit_requested = true;
-  }
-}
-
 void Game_DrawHUD(Game *game) {
   float screen_w = (float)GetScreenWidth();
   float screen_h = (float)GetScreenHeight();
 
-  Clay_SetLayoutDimensions((Clay_Dimensions){screen_w, screen_h});
-  Clay_SetPointerState((Clay_Vector2){(float)GetMouseX(), (float)GetMouseY()},
-                       IsMouseButtonDown(MOUSE_BUTTON_LEFT));
+  ClayRender_BeginFrame(&game->font, game_is_paused(game) && !game->show_debug_menu);
   Clay_BeginLayout();
+  MenuPauseAction pause_action = MENU_PAUSE_NONE;
   CLAY({
       .id = CLAY_ID("hud_root"),
       .layout =
@@ -1269,13 +1195,56 @@ void Game_DrawHUD(Game *game) {
   }) {
     HUD_BuildInfoPanel(&game->player, &game->world);
     HUD_BuildHotbar(&game->player);
+    if (game_is_paused(game)) {
+      const char *error = game->save_error;
+      if (!error[0] && game->internal_server_initialized &&
+          atomic_load(&game->internal_server.save_status) == -1)
+        error = "Autosave failed. Please retry before leaving.";
+      pause_action = Menu_BuildPause((MenuPauseView){
+          .show_options = game->show_options,
+          .remote_mode = game->remote_mode,
+          .clouds_enabled = game->clouds_enabled,
+          .pixel_look_enabled = game->pixel_look_enabled,
+          .error = error,
+      });
+    }
   }
   Clay_RenderCommandArray hud_commands = Clay_EndLayout();
-  ClayRender_Draw(hud_commands, &game->font);
   HUD_DrawHotbar(game->terrain_texture, &game->player);
+  ClayRender_Draw(hud_commands, &game->font);
 
-  if (game_is_paused(game)) {
-    draw_pause_menu(game);
+  if (game->internal_server_initialized && atomic_load(&game->internal_server.save_status) == -1)
+    Menu_CenteredText(game->font, "World save needs attention - open the pause menu",
+                      (Rectangle){0, 8, screen_w, 24}, 16, (Color){255, 163, 146, 255});
+
+  switch (pause_action) {
+  case MENU_PAUSE_RESUME:
+    close_escape_menu(game);
+    break;
+  case MENU_PAUSE_OPTIONS:
+    game->show_escape_menu = false;
+    game->show_options = true;
+    break;
+  case MENU_PAUSE_BACK:
+    game->show_options = false;
+    game->show_escape_menu = true;
+    break;
+  case MENU_PAUSE_CLOUDS:
+    game->clouds_enabled = !game->clouds_enabled;
+    break;
+  case MENU_PAUSE_PIXEL_LOOK:
+    game->pixel_look_enabled = !game->pixel_look_enabled;
+    Renderer_SetPixelateEnabled(&game->renderer, game->pixel_look_enabled);
+    Mesher_SetGeometryPixelSnapEnabled(game->pixel_look_enabled);
+    break;
+  case MENU_PAUSE_RETURN:
+    game->return_to_menu_requested = true;
+    break;
+  case MENU_PAUSE_QUIT:
+    game->quit_requested = true;
+    break;
+  default:
+    break;
   }
 
   if (game->cursor_locked && !game_is_paused(game)) {

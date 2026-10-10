@@ -114,6 +114,13 @@ void Player_Init(Player *player, Vector3 spawn_position) {
   player->fly_enabled = false;
 }
 
+void Player_SelectHotbarSlot(Player *player, int slot) {
+  if (slot < 0 || slot >= PLAYER_HOTBAR_SLOTS)
+    return;
+  player->hotbar_index = slot;
+  player->selected_block = player->hotbar_blocks[slot];
+}
+
 void Player_ApplyHotbarScroll(Player *player, float mouse_wheel_delta) {
   if (mouse_wheel_delta != 0.0f) {
     int steps = (int)floorf(fabsf(mouse_wheel_delta));

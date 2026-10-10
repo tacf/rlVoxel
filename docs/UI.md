@@ -1,119 +1,74 @@
-# UI Tech Details
+# UI
 
-Game UI runs on [Clay](https://github.com/nicbarker/clay), a single-header
-immediate-mode layout library, plus a small raylib renderer and a
-retained-mode caching layer for the parts of the HUD that don't change every
-frame. rlvoxel used to have its own homegrown, Clay-inspired layout library
-(`libui/`); it's gone now that Clay does the same job without us having to
-own a flex solver's edge cases ourselves.
+The HUD and menus use [Clay](https://github.com/nicbarker/clay) v0.14 for layout
+and raylib for drawing. CMake fetches Clay.
 
-## Quick Overview
+## Layout and drawing
 
-The UI stack has three layers:
+- `src/ui/clay_render.*`: Clay context, drawing, and nested clipping.
+- `src/ui/hud.*`: info panel, hotbar layout, and hotbar cache.
+- `src/ui/menu.*`: menus, buttons, and scrolling world list.
 
-- Clay itself (`clay.h`, vendored via CMake `FetchContent`, pinned to `v0.14`)
-  handles layout solving (row/column flex, padding, gap, alignment, sizing)
-  and produces a flat `Clay_RenderCommandArray` each frame.
-- A generic Clay -> raylib renderer in `src/ui/clay_render.*` turns that
-  render command array into `DrawRectangleRec`/`DrawTextEx`/`DrawTexturePro`/
-  scissor calls. Stateless, reusable for any Clay layout.
-- Game-specific UI building in `src/ui/hud.*` declares the actual HUD
-  elements (info panel + hotbar) and owns the hotbar's retained-mode texture
-  cache.
+`app.c` creates one shared context with `ClayRender_Init()` and frees it with
+`ClayRender_Shutdown()`. `Menu_Draw()` builds the main menu and world screens.
+`Menu_BuildPause()` builds pause and options. Screen changes happen after drawing
+to keep world-list text alive until the renderer is done.
 
-`Game_DrawHUD()` in `src/game/game.c` ties it together:
+`Game_DrawHUD()` in `src/game/game.c` draws the HUD in this order:
 
-1. `Clay_SetLayoutDimensions()` / `Clay_SetPointerState()` feed this frame's
-   screen size and pointer state to Clay.
-2. `Clay_BeginLayout()`, declare the HUD tree (`HUD_BuildInfoPanel()`,
-   `HUD_BuildHotbar()`), then `Clay_EndLayout()`. This is Clay's layout pass,
-   and it's unavoidably immediate mode: the whole element tree gets
-   redeclared every frame or the flex solver has nothing to work with.
-3. `ClayRender_Draw()` turns the resulting render commands into raylib draw
-   calls.
-4. `HUD_DrawHotbar()` draws the hotbar's cached background texture plus the
-   per-slot block icons on top (see "Retained Hotbar background" below).
+1. `ClayRender_BeginFrame()` passes screen size, font, mouse, and scrolling to Clay.
+2. `Clay_BeginLayout()`, HUD declarations, then `Clay_EndLayout()` rebuild the layout.
+3. `HUD_DrawHotbar()` draws the cached background and block icons.
+4. `ClayRender_Draw()` draws the remaining HUD and pause menu over the hotbar.
 
-The debug menu lives outside this stack entirely and uses ImGui (see
-`game_draw_debug_ui()` in `src/game/game.c`).
+Menu mouse input is disabled while gameplay has captured the cursor.
 
-## Font Rendering
+The debug menu uses ImGui, not Clay. See `game_draw_debug_ui()` in `src/game/game.c`.
 
-`src/ui/font_atlas.c` builds the game's `Font` straight from `stb_truetype`
-instead of going through raylib's `LoadFontEx()`. raylib scales its glyph
-atlas with `stbtt_ScaleForPixelHeight()`, which distorts pixel/bitmap-style
-fonts (see [raylib#5678](https://github.com/raysan5/raylib/issues/5678)).
-`FontAtlas_Load()` uses `stbtt_PackFontRange()` with `STBTT_POINT_SIZE()`
-instead, scaling via `stbtt_ScaleForMappingEmToPixels()`. The result is a
-plain raylib `Font` (same `baseSize`/`recs`/`glyphs`/`texture` shape
-`LoadFontEx` would give you), so `DrawTextEx`/`MeasureTextEx`/`UnloadFont`
-keep working untouched everywhere, including the raw pause-menu text in
-`Game_DrawHUD()` that never goes through Clay at all.
+## Menus
 
-Two other things matter for a pixel font like the one we ship
-(`unscii-16`):
+`src/ui/text_edit.*` stores cursor and selection positions. Left/Right and
+Home/End move the cursor. Basic text selections using shift or Ctrl+A.
 
-- It gets baked at its own native size (16px), not whatever size a given
-  piece of UI wants to display at. Individual draw calls pick their own
-  on-screen `fontSize`, and raylib scales from `baseSize` for free.
-- Coverage gets thresholded to a hard on/off mask (same idea as raylib's
-  `FONT_BITMAP` path) instead of left antialiased, so edges read as sharp
-  pixels instead of a soft blur.
+Menus use solid green panels, brown buttons, green accents, and cream text.
+Only the pause backdrop and text selection are transparent.
 
-Font texture filtering stays forced to `TEXTURE_FILTER_POINT` so glyphs stay
-pixel-sharp on top of all that.
+## Fonts
 
-## Resolution Independent UI
+`src/ui/font_atlas.c` builds a raylib `Font` with `stb_truetype`.
+`FontAtlas_Load()` uses `stbtt_PackFontRange()` with `STBTT_POINT_SIZE()` and
+`stbtt_ScaleForMappingEmToPixels()`. This avoids the pixel-font distortion from
+raylib's `LoadFontEx()` (see [raylib#5678](https://github.com/raysan5/raylib/issues/5678)).
 
-Clay has no built-in "reference resolution" concept; it just takes raw pixel
-values. `hud_scale()` in `hud.c` reproduces the old behavior directly:
+The bundled `unscii-16` font is baked at 16px and scaled when drawn. Glyph pixels
+are either fully on or off, with no antialiasing. `TEXTURE_FILTER_POINT` keeps
+the edges sharp when scaling.
 
-- `scale = min(screen_width / 1280, screen_height / 720)`, floored to an
-  integer and clamped to `>= 1`.
+## HUD scaling
 
-All HUD sizes (panel padding, slot size, gaps) get computed in real screen
-pixels from this scale and passed straight to `CLAY_SIZING_FIXED(...)`, no
-extra unit conversion needed since Clay doesn't re-scale fixed sizes on its
-own. Snapping the scale to an integer keeps glyphs and slot edges landing on
-whole pixels, which avoids blur from a point-filtered atlas at a
-non-integer scale.
+`hud_scale()` in `hud.c` uses `min(screen_width / 1280, screen_height / 720)`,
+rounded down with a minimum of 1. HUD sizes and spacing use this scale through
+`CLAY_SIZING_FIXED(...)` to keep edges on whole pixels.
 
-## Retained Hotbar Background
+## Hotbar cache
 
-Clay's layout declaration is immediate mode by design (their own docs say as
-much) and they recommend mapping stable per-element ids to persistent
-objects for anything that wants real retained-mode behavior. raylib's 2D
-drawing has no persistent scene graph, though: every draw call has to be
-reissued each frame regardless of whether anything changed, since the
-framebuffer gets fully redrawn. So the only way to actually retain something
-here is a persistent render target.
+`HUD_BuildHotbar()` reserves the `hud_hotbar_panel` box. After layout,
+`HUD_DrawHotbar()` gets its position with `Clay_GetElementData()`.
 
-`HUD_BuildHotbar()` only reserves a `CLAY_SIZING_FIXED` box in the Clay tree
-(`hud_hotbar_panel`) for layout purposes. `HUD_DrawHotbar()`, called after
-`ClayRender_Draw()` once `Clay_GetElementData()` can resolve that box's
-final screen position, bakes the panel border, fill, and per-slot
-border/fill rectangles into a `RenderTexture2D`. It only regenerates that
-texture when something affecting its look actually changed: selected hotbar
-slot, UI scale, or panel size. Otherwise it just blits the cached texture
-with a single `DrawTexturePro`. Per-slot block icons are drawn separately on
-top of that blit, since Clay's built-in image element can only do a
-full-texture blit (no atlas sub-rect), and icons change independently of the
-background anyway.
+The panel and slot backgrounds are cached in a `RenderTexture2D`. The cache is
+rebuilt when the selected slot, UI scale, or panel size changes, then drawn with
+one `DrawTexturePro()` call per frame.
 
-The info panel doesn't get the same treatment: its text (fps, position,
-biome) changes almost every frame, so there'd be nothing worth retaining.
+Block icons are drawn separately because Clay images cannot select part of a
+texture atlas. Each icon uses a 16x16 tile from `Block_Texture(block_id, FACE_UP)`
+and a tint from `Block_GetFaceTint(...)`.
 
-## Hotbar Rendering Details
+Clay draws slot numbers in the top-right corner, after the block icons.
+Number keys 1–9 select the matching slot during gameplay.
 
-Per slot: atlas tile lookup via `Block_Texture(block_id, FACE_UP)` (tile size
-`16x16`), tint via `Block_GetFaceTint(...)`, drawn with `DrawTexturePro`
-straight onto the screen rather than through Clay (see above).
+The info panel is drawn each frame. FPS, position, and biome text change often.
 
-## Possible Improvements
+## Not yet supported
 
-- No clipping/scrolling yet, though Clay supports it (`.clip` on
-  `Clay_ElementDeclaration`) whenever the HUD needs it.
-- No text wrapping.
-- The info panel's background rectangle is cheap enough to draw fresh every
-  frame as-is; if that ever changes it could get the same retained-texture
-  treatment as the hotbar, gated on whatever inputs actually move.
+- Keyboard navigation across all menu controls.
+- Unicode text input.

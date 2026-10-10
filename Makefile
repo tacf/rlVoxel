@@ -12,6 +12,12 @@ build: fetch
 run: build
 	./$(BUILD_DIR)/rlVoxel
 
+run-server: build
+	./$(BUILD_DIR)/rlVoxelServer --port 56767
+
+run-client-server: build
+	./$(BUILD_DIR)/rlVoxel --connect localhost:56767
+
 debug:
 	$(CMAKE) -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Debug
 	$(CMAKE) --build $(BUILD_DIR) --config Debug -j

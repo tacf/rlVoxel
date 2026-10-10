@@ -20,7 +20,7 @@ static void on_signal(int signum) {
 
 static void print_usage(const char *exe) {
   printf("Usage: %s [--bind <ip|*>] [--port <u16>] [--seed <int64>] [--render-distance <chunks>] "
-         "[--max-clients <n>]\n",
+         "[--max-clients <n>] [--world <directory>]\n",
          exe);
 }
 
@@ -70,6 +70,10 @@ int main(int argc, char **argv) {
       config.render_distance = atoi(value);
     } else if (strcmp(flag, "--max-clients") == 0) {
       config.max_clients = atoi(value);
+    } else if (strcmp(flag, "--world") == 0) {
+      if (strlen(value) >= sizeof(config.save_directory))
+        return 1;
+      snprintf(config.save_directory, sizeof(config.save_directory), "%s", value);
     } else {
       print_usage(argv[0]);
       return 1;
@@ -79,9 +83,6 @@ int main(int argc, char **argv) {
   if (!seeded) {
     config.seed = random_seed();
   }
-
-  printf("rlVoxelServer seed: %" PRId64 "\n", config.seed);
-  printf("Listening on %s:%u\n", config.bind, (unsigned int)config.port);
 
   net = Net_Listen(config.bind, config.port, (size_t)config.max_clients);
   if (net == NULL) {
@@ -94,6 +95,9 @@ int main(int argc, char **argv) {
     Net_Destroy(net);
     return 1;
   }
+
+  printf("rlVoxelServer seed: %" PRId64 "\n", server.config.seed);
+  printf("Listening on %s:%u\n", config.bind, (unsigned int)config.port);
 
   signal(SIGINT, on_signal);
   signal(SIGTERM, on_signal);
@@ -110,6 +114,7 @@ int main(int argc, char **argv) {
   }
 
   ServerCore_Stop(&server);
+  bool saved = ServerCore_Save(&server);
   ServerCore_Shutdown(&server);
-  return 0;
+  return saved ? 0 : 1;
 }

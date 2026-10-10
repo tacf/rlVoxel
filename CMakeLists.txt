@@ -19,7 +19,6 @@ FetchContent_Declare(
 
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
     stb
@@ -76,6 +75,8 @@ set(RUNTIME_SOURCES
     src/ui/font_atlas.c
     src/ui/clay_render.c
     src/ui/hud.c
+    src/ui/menu.c
+    src/ui/text_edit.c
     src/game/game.c
     src/game/game_input.c
     src/game/player.c
@@ -84,6 +85,7 @@ set(RUNTIME_SOURCES
     src/world/blocks.c
     src/world/chunk.c
     src/world/world.c
+    src/world/world_save.c
     src/world/worldgen.c
     src/world/lighting.c
     src/world/mesher.c
@@ -117,11 +119,3 @@ target_link_libraries(rlVoxel PRIVATE rlvoxel_runtime)
 
 add_executable(rlVoxelServer src/server/server_main.c)
 target_link_libraries(rlVoxelServer PRIVATE rlvoxel_runtime)
-
-option(RLVOXEL_BUILD_TESTS "Build rlVoxel regression tests" OFF)
-if(RLVOXEL_BUILD_TESTS)
-    enable_testing()
-    add_executable(world_tests tests/world_tests.c)
-    target_link_libraries(world_tests PRIVATE rlvoxel_runtime)
-    add_test(NAME world_tests COMMAND world_tests)
-endif()

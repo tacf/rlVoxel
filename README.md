@@ -46,7 +46,6 @@ To build and run the world regression tests:
 ```bash
 cmake -S . -B build -DRLVOXEL_BUILD_TESTS=ON
 cmake --build build -j
-ctest --test-dir build --output-on-failure
 ```
 
 ## CLI
@@ -55,9 +54,22 @@ ctest --test-dir build --output-on-failure
 ./build/rlVoxel --seed <int64> --render-distance <chunks>
 ```
 
-- `--seed <int64>`: deterministic world seed.
+The main menu lets you create, open, rename, or archive worlds.
+
+- `--seed <int64>`: set the seed shown when creating a world.
 - `--render-distance <chunks>`: chunk radius around player.
+- `--saves-dir <directory>`: where worlds are stored (default: `saves/`).
+- `--world <directory>`: open a saved world without going through the menu.
+- `--connect <host[:port]>`: connect directly to a remote server.
 - `--help` / `-h`: print usage.
+
+Local worlds save every minute of simulation time, before chunks unload, and on exit.
+See [docs/WORLD_SAVES.md](docs/WORLD_SAVES.md) for the format and archive recovery.
+To run a dedicated server with a saved world:
+
+```bash
+./build/rlVoxelServer --world saves/<world-folder>
+```
 
 ## Controls
 
@@ -66,6 +78,7 @@ ctest --test-dir build --output-on-failure
 - `Left Shift`: sprint
 - Mouse: look around (when cursor locked)
 - Mouse wheel: cycle hotbar selection (when cursor locked)
+- `1`–`9`: select a hotbar slot (when cursor locked)
 - Left click: break block
 - Right click: place block
 - `F4`: toggle gameplay mode (`Creative` <-> `Survival`)
@@ -99,7 +112,7 @@ This folder also contains physics implementation, some math that is used to atte
 The `gfx` folder tries to segregate away the rendering part so it's not all jumbled together. And `profiler/`
 and `diagnostics` are dedicated to the _builtin_ ui and API for it.
 
-The generic retained UI API now lives in `libui/` (static library), while game-specific HUD composition remains in `src/ui/`.
+The HUD and menus use Clay layout and the raylib renderer in `src/ui/`.
 
 ### Design Choices
 
@@ -126,7 +139,8 @@ Project wise some design choices were made
 - Multi-pass chunk rendering (solid, translucent, cutout)
 - FastNoiseLite-backed world noise sampling (via `src/math/noise.c` wrapper API)
 - Built-in frame profiler and telemetry UI
-- Retained-mode UI module (`libui`) with resolution-independent sizing helpers
+- Clay-based HUD, main menu, world management, pause menu, and options
+- World saves and autosave, including player position and hotbar selection
 - 9-slot hotbar with wheel selection driving currently held/placed block
 - Barebones Physics
 - Block breaking and placing

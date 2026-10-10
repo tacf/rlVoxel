@@ -5,11 +5,14 @@
 
 #include <clay.h>
 
-/* Turns a Clay_RenderCommandArray into raylib draw calls. Stateless: Clay's
- * layout pass is immediate mode by design, so callers redeclare the whole
- * tree every frame and this module just walks the result. Point the
- * userData in Clay_SetMeasureTextFunction and the font passed to
- * ClayRender_Draw at the same Font.
+/* One application-owned context shared by menus and the gameplay HUD. */
+bool ClayRender_Init(Font *font);
+void ClayRender_Shutdown(void);
+void ClayRender_BeginFrame(Font *font, bool pointer_enabled);
+
+/* Turns a Clay_RenderCommandArray into raylib draw calls, preserving nested
+ * clipping regions. Clay's layout is declared again each frame; BeginFrame
+ * selects the font used by both measurement and rendering.
  *
  * Caching is the caller's job. If some subtree barely changes frame to
  * frame, bake it into a RenderTexture2D and skip Clay for it entirely -

@@ -56,7 +56,7 @@ It also decides which channel and reliability mode each message type uses.
 
 ## Internal singleplayer
 
-Singleplayer still runs the full client/server flow; the only difference is both sides live in the same process.
+Singleplayer still runs the full client/server flow but they both run in the same process.
 
 How it works:
 
